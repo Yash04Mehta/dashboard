@@ -1,0 +1,74 @@
+# Aquant Insight
+
+One dashboard for WhatsApp messages, leads and opportunities, with a lookup for a single customer.
+Built with React, **shadcn/ui** (Tailwind), Recharts and a small local server. It runs on your own computer: customer data never goes to a website.
+
+## Run it
+Double-click **`start.bat`**. After about 15 seconds your browser opens at http://localhost:8787. Close the window, or run `stop.bat`, to stop it.
+(First time only it installs packages and builds the app. Needs Node 22 or newer.)
+
+## Pages
+| Page | What it answers |
+|---|---|
+| **Messages** | How templates perform: delivered, read, replied, failed. Trend, drop-off funnel, per-template table, failure bursts, and rates by lead source or owner. Click a template row to filter the page to it. |
+| **Leads** | Where leads come from, status mix, welcome and follow-up coverage by month, owner table, and a searchable list of every lead. |
+| **Opportunities** | Open, won, lost, win rate, how long New opportunities have waited, owner table, and a searchable list. |
+| **Customer lookup** | Search one customer by phone digits (4 or more), name, lead id or opportunity id. Shows their leads, opportunities, every WhatsApp template sent and its outcome, customer messages, data-quality notes and a dated timeline. |
+
+**Export report** (top bar) makes a printable report for the dates and filters you picked: it opens in a new tab, where you can download it as a file or save it as a PDF. It holds totals only (no phone numbers or message text).
+
+Filters (date range, template, lead source, owner, status) sit at the top of each page and live in the web address, so a filtered view can be bookmarked or sent.
+When a date range is chosen, each rate is compared with the same number of days before it.
+
+## Privacy
+- The server listens on this computer only and rejects requests for any other host name.
+- Phone numbers are masked (last 4 digits). Names that are really phone numbers are masked too.
+- On a customer page, a switch reveals the full phone and the text of that customer's messages. Turn this off for everyone with `ALLOW_REVEAL=false` in `.env`.
+- The `dashboard` folder holds no customer data. It reads the CSV exports from `..\data_insight`.
+
+## Data sources
+**CSV mode (default).** Reads the five exports in `..\data_insight` (`lead_insight`, `opportunity_insight`, `wati_message_pivot`, `wati_message_log`, `wati_sessions`). It is a snapshot. To refresh, replace the files and restart.
+
+**Connecting the live database.** Then every page reads the real data and the header badge says "Live database".
+1. Someone with database admin rights runs, in this order, `server/sql/reporting_views.sql` then `server/sql/app.sql`. They create read-only views in a new schema called `reporting`; no table is changed.
+2. Create a read-only login:
+   ```sql
+   create role dashboard_ro login password '<choose-a-strong-password>';
+   grant connect on database <your_db> to dashboard_ro;
+   grant usage on schema reporting to dashboard_ro;
+   grant select on all tables in schema reporting to dashboard_ro;
+   alter default privileges in schema reporting grant select on tables to dashboard_ro;
+   -- the Inbox and Customer lookup pages read these two source tables directly (read-only)
+   grant usage on schema public to dashboard_ro;
+   grant select on public.wati_message_log, public.wati_sessions to dashboard_ro;
+   ```
+   Re-run the `grant select` line after re-running the SQL files, because the views are recreated.
+3. Copy `.env.example` to `.env`, set `DATABASE_URL`, and restart. Do not share the file. For Supabase, use the "Session pooler" address from Project, Connect (the plain address only works over IPv6).
+4. Run `node server/check_live.mjs`. It connects read-only and tells you in plain words what is missing (views, grants, an old feed). Fix anything marked FIX, then start the dashboard with `start.bat`.
+5. Open **Overview v1** or **Messages v1** in the sidebar. The badge at the top right says "Live" with the time of the last refresh, and the numbers refresh by themselves every minute. In snapshot mode the same badge says "Snapshot" and nothing refreshes.
+
+Real time depends on the feed, not on the dashboard: WATI sends each event to n8n, n8n saves it to the database, and the dashboard reads it within a minute. If the newest message in the log is old, the problem is the WATI webhook or the n8n workflow, and `check_live.mjs` says so.
+
+Every query runs inside a read-only transaction, so the app cannot change your data even by mistake. Answers are cached for 60 seconds in live mode.
+
+## What the numbers mean
+- **Messages followed** = sent plus failed, minus repeat sends of the same template to the same number. Only the first message of a template is tracked today, so later ones cannot be followed.
+- **Delivered, read** = the highest of the delivered, read and replied counters per row. The raw delivered counter misses most events, so these are lower bounds. (The earlier dashboard showed 23.3% delivered; measured, it is 60.5%.)
+- **Dates** on message pages are the first send to that person for that template, the same rule the earlier dashboard used.
+- **Won and lost** are counted from the opportunity status, not the flag columns, which disagree on some rows.
+
+## Known data problems the dashboard shows rather than hides
+- The real lead source was replaced by a status for 62% of leads (workflow #7). It shows as "unknown".
+- The phone number was replaced by text for 31% of leads. Those leads cannot be linked to their messages.
+- The WhatsApp feed was silent from 6 to 12 March and from 2 September to 22 October 2026.
+- No agent messages are logged, so reply time is not available yet.
+
+## Tests
+With the server running, `npm test` runs 61 checks against the API. The expected numbers were verified independently. The same checks also pass when the app reads through the Postgres driver (tested against a Postgres-protocol stand-in loaded with the same data, not against your real database, so run `npm test` once after connecting it).
+
+## Folder map
+```
+server/      index.mjs (web server), db.mjs (CSV or live), queries.mjs (every number), sql/ (the views), test_api.mjs
+src/         pages/ (the five pages), components/ (shadcn/ui and shared pieces), lib/ (data, filters, formatting)
+start.bat    stop.bat    .env.example
+```

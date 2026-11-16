@@ -1,0 +1,5 @@
+category,price,currency,effective_from,source,note
+MARKETING,0.8631,INR,2025-07-01,placeholder,Starting value from memory of Meta's India list price. Check it against your WATI invoice and change it.
+UTILITY,0.115,INR,2025-07-01,placeholder,Starting value from memory of Meta's India list price. Check it against your WATI invoice and change it.
+AUTHENTICATION,0.115,INR,2025-07-01,placeholder,Starting value from memory of Meta's India list price. Check it against your WATI invoice and change it.
+SERVICE,0,INR,2025-07-01,meta,Replies inside the 24 hour customer window are free.
