@@ -1,4 +1,4 @@
-# Netlify: builds the web app, serves dist/, and runs the API as one Netlify Function (netlify/functions/api.mjs).
+# Netlify: builds the web app, serves dist/, and runs the API as one Netlify Function (netlify/functions/api.mjs, which claims the address /api/*).
 # Settings that must be added in Netlify (Site configuration > Environment variables, never in this repo): see the header of netlify/functions/api.mjs and README "Hosting on Netlify".
 
 [build]
@@ -12,13 +12,6 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
   included_files = ["config/**"]   # the rate card and template list the cost figures read
-
-# the API: every /api/... call goes to the function (the address in the browser does not change)
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
-  status = 200
-  force = true
 
 # the web app is one page with its own routes (/messages, /chats ...): any other address opens it
 [[redirects]]
