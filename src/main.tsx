@@ -1,28 +1,24 @@
 import { lazy, StrictMode, Suspense } from "react"
 import { createRoot } from "react-dom/client"
-import { BrowserRouter, Route, Routes } from "react-router-dom"
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import "./index.css"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppLayout } from "@/components/app-layout"
+import { AuthGate } from "@/lib/auth"
 import { FiltersProvider } from "@/lib/filters"
 import { RefreshProvider } from "@/components/refresh"
 import { RevealProvider } from "@/lib/reveal"
 const Overview = lazy(() => import("@/pages/overview"))
 const Messages = lazy(() => import("@/pages/messages"))
-const Costs = lazy(() => import("@/pages/costs"))
-const Inbox = lazy(() => import("@/pages/inbox"))
-const Leads = lazy(() => import("@/pages/leads"))
-const Opportunities = lazy(() => import("@/pages/opportunities"))
+const Chats = lazy(() => import("@/pages/chats"))
+const Agents = lazy(() => import("@/pages/agents"))
 const Customers = lazy(() => import("@/pages/customers"))
-const OverviewV1 = lazy(() => import("@/pages/ov_v1"))
-const MessagesV1 = lazy(() => import("@/pages/mes_v1"))
-const ChatsV1 = lazy(() => import("@/pages/chats_v1"))
-const CustomerLookupV1 = lazy(() => import("@/pages/cust_v1"))
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter>
       <TooltipProvider delay={150}>
+        <AuthGate>
         <RefreshProvider>
         <FiltersProvider>
           <RevealProvider>
@@ -31,15 +27,14 @@ createRoot(document.getElementById("root")!).render(
             <Route element={<AppLayout />}>
               <Route index element={<Overview />} />
               <Route path="messages" element={<Messages />} />
-              <Route path="costs" element={<Costs />} />
-              <Route path="inbox" element={<Inbox />} />
-              <Route path="leads" element={<Leads />} />
-              <Route path="opportunities" element={<Opportunities />} />
+              <Route path="chats" element={<Chats />} />
+              <Route path="agents" element={<Agents />} />
               <Route path="customers" element={<Customers />} />
-              <Route path="ov_v1" element={<OverviewV1 />} />
-              <Route path="mes_v1" element={<MessagesV1 />} />
-              <Route path="chats_v1" element={<ChatsV1 />} />
-              <Route path="cust_v1" element={<CustomerLookupV1 />} />
+              {/* old "v1" addresses still work for bookmarks */}
+              <Route path="ov_v1" element={<Navigate to="/" replace />} />
+              <Route path="mes_v1" element={<Navigate to="/messages" replace />} />
+              <Route path="chats_v1" element={<Navigate to="/chats" replace />} />
+              <Route path="cust_v1" element={<Navigate to="/customers" replace />} />
               <Route path="*" element={<Overview />} />
             </Route>
           </Routes>
@@ -47,6 +42,7 @@ createRoot(document.getElementById("root")!).render(
           </RevealProvider>
         </FiltersProvider>
         </RefreshProvider>
+        </AuthGate>
       </TooltipProvider>
     </BrowserRouter>
   </StrictMode>,

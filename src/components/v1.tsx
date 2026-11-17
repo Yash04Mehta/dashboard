@@ -1,4 +1,4 @@
-// Building blocks shared by the two v1 pages (Overview v1 = /ov_v1, Messages v1 = /mes_v1). They follow the layout in "Overview Page.md".
+// Building blocks shared by the live pages (Overview = /, Messages = /messages). They follow the layout in "Overview Page.md".
 // Everything here reads the same endpoints as the other pages, so the figures are identical and work in CSV and live mode alike.
 import { useColResize } from "@/components/col-resize"
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
@@ -19,7 +19,8 @@ import { RefreshContext, api, useApi, type Params } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 import { useReveal } from "@/lib/reveal"
 import { day, duration, num, one, pct, periodLabel, ppDelta } from "@/lib/format"
-import { BUCKETS as FAIL_BUCKETS, BUCKET_ORDER, GROUPS, bucketOf, classify, type BucketId, type FailGroupId } from "@/lib/fail-reasons"
+import { BUCKETS as FAIL_BUCKETS, BUCKET_ORDER, GROUPS, bucketOf, classify, classifyMsg, type BucketId, type FailGroupId } from "@/lib/fail-reasons"
+import { nameIssue, phoneIssue } from "@/lib/validate"
 import { priceTemplates } from "@/lib/costs"
 import { cn } from "@/lib/utils"
 
@@ -61,7 +62,7 @@ export function ConversationDetails({ params }: { params: Params }) {
   const legacy = useApi<any>(ws.data && !ws.data.available ? "inbox/kpis" : null, dates)
   const w = ws.data?.available ? ws.data : null
   const chatSearch = (() => { const q = new URLSearchParams(); if (params.from) q.set("from", String(params.from)); if (params.to) q.set("to", String(params.to)); const t = q.toString(); return t ? "?" + t : "" })()   // the date range goes with you
-  const link = <Link to={{ pathname: "/chats_v1", search: chatSearch }} className="inline-flex items-center gap-1 text-foreground hover:underline">See all chats <ArrowRight className="size-3.5" /></Link>
+  const link = <Link to={{ pathname: "/chats", search: chatSearch }} className="inline-flex items-center gap-1 text-foreground hover:underline">See all chats <ArrowRight className="size-3.5" /></Link>
   if (w) {
     const p = w.period, of = (n: number) => withShare(n, p.total ? Math.round((1000 * n) / p.total) / 10 : null)
     return (
@@ -109,7 +110,7 @@ export function MessageNumbers({ params, noTemplate }: { params: Params; noTempl
       <ErrorNote message={mk.error || lk.error} />
       <ScoreGrid cols={3} title="Leads and WhatsApp messages" stats={[
         { icon: Users, label: "Total leads (unique)", loading: !l, value: num(l?.people), foot: l && `${num(l.leads)} lead records`, hint: "Each phone number counts once, even if the person has several leads. Leads without a usable phone number cannot be counted." },
-        { icon: Send, label: "Total messages sent", loading: !m, value: num(m?.measured), foot: m && `${num(m.attempts)} messages in all, including repeats`, hint: "Each person counts once per template, for the first message they got. Repeat messages to the same person are left out here, so the percentages next to the numbers below add up. The list at the bottom (Messages v1) counts every message, so it can be higher." },
+        { icon: Send, label: "Total messages sent", loading: !m, value: num(m?.measured), foot: m && `${num(m.attempts)} messages in all, including repeats`, hint: "Each person counts once per template, for the first message they got. Repeat messages to the same person are left out here, so the percentages next to the numbers below add up. The list at the bottom of the Messages page counts every message, so it can be higher." },
         { icon: CheckCheck, label: "Total delivered", loading: !m, ...withShare(m?.delivered_adj, m?.delivered_pct), meter: m?.delivered_pct, delta: d(m?.delivered_pct, mp?.delivered_pct), foot: m && "at least this many", hint: "At least this many: WhatsApp does not always report delivery, so the real number is probably higher." },
         { icon: Eye, label: "Total read", loading: !m, ...withShare(m?.read_adj, m?.read_pct), meter: m?.read_pct, delta: d(m?.read_pct, mp?.read_pct), foot: m && "at least this many" },
         { icon: MessageCircle, label: "Total replied", loading: !m, ...withShare(m?.replied, m?.replied_pct), meter: m?.replied_pct, tone: "good", delta: d(m?.replied_pct, mp?.replied_pct), foot: m && "customers who answered" },
@@ -119,6 +120,9 @@ export function MessageNumbers({ params, noTemplate }: { params: Params; noTempl
   )
 }
 
+/** Funnel colours in WhatsApp's order, clear but not neon: steel grey for sent, emerald for delivered, a proper blue for read, deep teal for replied. */
+const WA_COLORS = ["#8a97a8", "#2e9d6b", "#3b82d6", "#0f766e"]
+
 /** Message funnel, full width: the flowing funnel (a band for what carries on, a fading curve for what drops out), in its sleek style. */
 export function MessageFunnelCard({ params }: { params: Params }) {
   const mk = useApi<any>("messages/kpis", params)
@@ -127,7 +131,7 @@ export function MessageFunnelCard({ params }: { params: Params }) {
     <ChartCard title="Message funnel" description="Each column is a step. The wide band is how many carried on to the next step; the curve below shows how many dropped out. Hover over a step for details.">
       {!c ? <ChartSkeleton h={300} /> : !c.measured ? <Empty>No messages were tracked in this period.</Empty> : (
         <>
-          <Funnel sleek ariaLabel={`Of ${num(c.measured)} messages, ${num(c.delivered_adj)} were delivered, ${num(c.read_adj)} read and ${num(c.replied)} replied.`}
+          <Funnel sleek colors={WA_COLORS} ariaLabel={`Of ${num(c.measured)} messages, ${num(c.delivered_adj)} were delivered, ${num(c.read_adj)} read and ${num(c.replied)} replied.`}
             stages={[
               { label: "Messages sent", value: c.measured, icon: <Send className="size-4" />, drop: "failed or never confirmed" },
               { label: "Delivered", value: c.delivered_adj, icon: <CheckCheck className="size-4" />, drop: "delivered, not read" },
@@ -465,11 +469,22 @@ const LOG_STYLE: Record<string, { label: string; cls: string }> = {
   read: { label: "Read", cls: "bg-c1/15 text-c1" }, delivered: { label: "Delivered", cls: "bg-c2/15 text-c2" }, sent: { label: "Sent", cls: "bg-muted text-muted-foreground" },
 }
 const whenAt = (s?: string | null) => { try { return s ? format(parseISO(s), "d MMM, h:mm a") : "—" } catch { return s ?? "—" } }
+/**
+ * The plain sentence for a row, the way an activity feed would say it: "WhatsApp message sent to Asha Verma (+919800000000)".
+ * The name and full number appear only when reveal is on; otherwise it reads "WhatsApp message sent to •••••• 1234". A message WATI refused has no number saved.
+ */
+const activityLine = (r: any, revealed: boolean) => {
+  const digits = String(r.phone ?? "").replace(/\D/g, "")
+  const number = !r.phone ? "" : revealed && digits ? "+" + digits : String(r.phone)
+  const who = number ? (revealed && r.name ? `${r.name} (${number})` : number) : "a customer (number not saved)"
+  return r.status === "failed" ? `WhatsApp message to ${who} failed` : `WhatsApp message sent to ${who}`
+}
 /** one CSV cell. Text starting with = + - @ would be read as a formula by Excel, so it gets a quote in front. */
-const csvCell = (v: unknown) => { let t = v == null ? "" : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t }
+const csvCell =(v: unknown) => { let t = v == null ? "" : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t }
 
 function LogDetail({ r, revealed, canReveal }: { r: any; revealed: boolean; canReveal: boolean }) {
-  const c = r.status === "failed" ? classify(r.reason) : null
+  const c = classifyMsg(r)
+  const pi = phoneIssue(r.phone_issue), ni = nameIssue(r.name_issue)
   const B = c ? FAIL_BUCKETS[bucketOf(c.group.id)] : null
   const steps = ([["Sent", r.times.sent], ["Delivered", r.times.delivered], ["Read", r.times.read], ["Replied", r.times.replied], ["Failed", r.times.failed]] as const).filter(([, t]) => t)
   return (
@@ -491,14 +506,206 @@ function LogDetail({ r, revealed, canReveal }: { r: any; revealed: boolean; canR
         </div>
         {c && B && (
           <div className="rounded-lg border-l-4 bg-muted/60 px-3 py-2.5 leading-relaxed" style={{ borderColor: B.color }}>
-            <div className="font-medium">Why it failed: {c.label}{c.code && <span className="ml-1.5 rounded bg-background px-1 py-px font-mono text-[11px] text-muted-foreground">{c.code}</span>}</div>
+            <div className="font-medium">{c.because ? `Why it failed: most likely because ${c.because}` : <>Why it failed: {c.label}</>}{c.code && <span className="ml-1.5 rounded bg-background px-1 py-px font-mono text-[11px] text-muted-foreground">{c.code}</span>}</div>
             <div className="mt-0.5 text-xs" style={{ color: B.color }}>{B.title}</div>
-            <p className="mt-1.5 text-muted-foreground">{c.group.means}</p>
-            <p className="mt-1.5"><b>What to do. </b><span className="text-muted-foreground">{c.group.todo}</span></p>
+            {c.via && <p className="mt-1 text-xs text-muted-foreground">WhatsApp itself reported: “{c.via}”{c.code ? ` (${c.code})` : ""}</p>}
+            <p className="mt-1.5 text-muted-foreground">{pi ? pi.means : c.group.means}</p>
+            <p className="mt-1.5"><b>What to do. </b><span className="text-muted-foreground">{pi ? pi.todo : c.group.todo}</span></p>
+          </div>
+        )}
+        {!c && pi && (
+          <div className="rounded-lg border-l-4 bg-muted/60 px-3 py-2.5 leading-relaxed" style={{ borderColor: "var(--warn)" }}>
+            <div className="font-medium">Number check: {pi.label}</div>
+            <p className="mt-1.5 text-muted-foreground">{pi.means} This message was not reported as failed, but {r.status === "sent" ? "that may be why nothing came back" : "a number like this usually does not get through"}.</p>
+            <p className="mt-1.5"><b>What to do. </b><span className="text-muted-foreground">{pi.todo}</span></p>
+          </div>
+        )}
+        {ni && (
+          <div className="rounded-lg border-l-4 bg-muted/60 px-3 py-2.5 leading-relaxed" style={{ borderColor: "var(--c4)" }}>
+            <div className="font-medium">Name check: {ni.label}</div>
+            <p className="mt-1.5 text-muted-foreground">{ni.means} A wrong name does not stop WhatsApp delivering the message.</p>
+            <p className="mt-1.5"><b>What to do. </b><span className="text-muted-foreground">{ni.todo}</span></p>
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+/** What each status button means, in plain words. Used for the summary and as the tooltip on the buttons. */
+const STATUS_MEANING: Record<string, string> = {
+  replied: "The customer answered.",
+  read: "The customer opened it but has not replied.",
+  delivered: "It reached the customer's phone, but there is no sign it was opened. Some may have been read by customers who have read receipts switched off.",
+  sent: "WhatsApp took the message, but nothing came back about it: it may still be on its way, the phone may be off, or WATI never reported it. Delivery is not always reported, so some of these did arrive.",
+  failed: "It was never sent.",
+}
+const STATUS_HINT: Record<string, string> = {
+  replied: "These customers answered, so they are your warmest group and worth a call.",
+  read: "They opened it and went quiet: a good group for a follow-up call or message.",
+  delivered: "Not opened yet. Many open it later, so look again in a day.",
+  sent: "Anything under an hour old may still get its report. Older ones are unlikely to.",
+}
+const STATUS_NAME: Record<string, string> = { all: "All messages", failed: "Failed messages", replied: "Replied messages", read: "Read messages (not replied)", delivered: "Delivered messages (not read)", sent: "Sent-only messages" }
+const LAG_LABEL: Record<string, string> = { replied: "Typical time to reply", read: "Typical time to read", delivered: "Typical time to arrive", failed: "Typical time to fail" }
+
+/**
+ * The summary under the status buttons of "Every message we sent". It describes the messages the selected button shows, for the date and template filters
+ * at the top of the page: All gives the whole picture, Failed gives why they failed, Replied / Read / Delivered / Sent only give what that group is, how fast it
+ * happened and which templates it came from. It reads the same response as the table, so it costs no extra request.
+ */
+function StatusSummary({ data, params }: { data: any; params: Params }) {
+  const c = data.counts, s = data.summary
+  if (!c?.all || !s) return null
+  const st: string = s.status ?? "all", n: number = s.n ?? 0
+  const from = params.from ? String(params.from) : "", to = params.to ? String(params.to) : from
+  const when = !from ? "all dates" : from === to ? day(from) : `${day(from)} to ${day(to)}`
+  const picked = params.templates ? String(params.templates).split("|").filter(Boolean) : []
+  const what = picked.length === 0 ? "all templates" : picked.length === 1 ? picked[0] : `${picked.length} templates`
+  const ignored = [params.sources ? "lead source" : "", params.owners ? "owner" : ""].filter(Boolean)
+  const share = (x: number, of = c.all) => pct(of ? (100 * x) / of : null)
+  const reached = c.delivered + c.read + c.replied, readUp = c.read + c.replied
+  const plural = (k: number, one: string, many = one + "s") => `${num(k)} ${k === 1 ? one : many}`
+
+  // why messages failed: the most common codes, grouped into plain causes, each with its share of the failures
+  const causes = new Map<string, { label: string; n: number; bucket: BucketId; todo: string }>()
+  for (const f of (s.failures ?? []) as { reason: string | null; n: number }[]) {
+    const k = classify(f.reason), key = k.group.id + "|" + k.label, prev = causes.get(key)
+    causes.set(key, { label: k.label, n: (prev?.n ?? 0) + f.n, bucket: bucketOf(k.group.id), todo: k.group.todo })
+  }
+  const causeList = [...causes.values()].sort((a, b) => b.n - a.n)
+  const failN = st === "all" ? c.failed : n
+  const otherFail = Math.max(0, failN - causeList.reduce((t, x) => t + x.n, 0))
+  const top = causeList[0]
+  const tpls = (s.topTemplates ?? []) as { name: string; n: number }[]
+  const lag = s.lag as { median: number; p90: number; n: number } | null
+  const inTime = (m: number) => (m < 1 ? "in under a minute" : `within ${duration(m)}`)
+
+  let sentence: string
+  if (st === "all") {
+    sentence = `${plural(c.all, "message")} went to ${plural(s.people, "customer")}. ${share(reached)} reached the phone, ${share(readUp)} were read and ${share(c.replied)} got a reply. `
+      + (c.failed ? `${share(c.failed)} (${num(c.failed)}) failed${top ? `, mostly “${top.label}” (${share(top.n)} of all messages)` : ""}.` : "None failed.")
+      + (c.sent ? ` ${plural(c.sent, "message")} (${share(c.sent)}) ${c.sent === 1 ? "has" : "have"} no delivery news yet${s.sentRecent ? `, ${num(s.sentRecent)} of them sent in the last hour so may still be on the way` : ""}.` : "")
+  } else if (st === "failed") {
+    sentence = `${plural(n, "message")} failed, which is ${share(n)} of all ${num(c.all)} messages, across ${plural(s.people, "customer")}. `
+      + (top ? `The biggest cause is “${top.label}”: ${num(top.n)} of them (${share(top.n, n)}). ` : "")
+      + (lag ? `When a message failed it was typically ${duration(lag.median)} after sending.` : "")
+  } else if (st === "replied") {
+    sentence = `${plural(n, "customer reply", "customer replies")} to ${num(c.all)} messages (${share(n)}), from ${plural(s.people, "customer")}. `
+      + (lag ? `The typical reply came ${duration(lag.median)} after the message was sent, and 9 in 10 came ${inTime(lag.p90)}.` : "")
+  } else if (st === "read") {
+    sentence = `${plural(n, "message")} (${share(n)} of all) were opened but not answered, for ${plural(s.people, "customer")}. `
+      + (lag ? `They were typically read ${duration(lag.median)} after sending, and 9 in 10 ${inTime(lag.p90)}.` : "")
+  } else if (st === "delivered") {
+    sentence = `${plural(n, "message")} (${share(n)} of all) reached the phone but show no sign of being opened, for ${plural(s.people, "customer")}. `
+      + (lag ? `They typically arrived ${duration(lag.median)} after sending.` : "")
+  } else {
+    sentence = `${plural(n, "message")} (${share(n)} of all) have no delivery news, for ${plural(s.people, "customer")}. `
+      + (n ? `${num(s.sentRecent)} ${s.sentRecent === 1 ? "was" : "were"} sent in the last hour and ${num(s.sentOld)} ${s.sentOld === 1 ? "is" : "are"} over a day old.` : "")
+  }
+
+  type Tile = { label: string; value: string; sub: string; tone?: string; wide?: boolean; small?: boolean }
+  const topT = tpls[0]
+  const busiest: Tile = { label: st === "all" ? "Busiest template" : "Top template", value: topT?.name ?? "—", sub: topT ? `${num(topT.n)} messages${s.templates > 1 ? ` · ${num(s.templates)} templates` : ""}` : "", small: true, wide: true }
+  const tiles: Tile[] = st === "all" ? [
+    { label: "Messages", value: num(c.all), sub: `to ${num(s.people)} customers` },
+    { label: "Reached the phone", value: share(reached), sub: `${num(reached)} messages` },
+    { label: "Read", value: share(readUp), sub: `${num(readUp)} messages` },
+    { label: "Replied", value: share(c.replied), sub: `${num(c.replied)} messages`, tone: "good" },
+    { label: "Failed", value: share(c.failed), sub: `${num(c.failed)} messages`, tone: c.failed / c.all > 0.05 ? "bad" : "" },
+    busiest,
+  ] : [
+    { label: "Messages", value: num(n), sub: `${share(n)} of all ${num(c.all)}`, tone: st === "failed" && n ? "bad" : st === "replied" ? "good" : "" },
+    { label: "Customers", value: num(s.people), sub: `${plural(s.templates, "template")}` },
+    ...(lag && LAG_LABEL[st] ? [{ label: LAG_LABEL[st], value: duration(lag.median), sub: `9 in 10 ${inTime(lag.p90)}` }] : []),
+    ...(st === "sent" ? [{ label: "Sent in the last hour", value: num(s.sentRecent), sub: "may still be on the way" }, { label: "Over a day old", value: num(s.sentOld), sub: "probably no report" }] : []),
+    busiest,
+  ]
+  const stages = [
+    { id: "replied", label: "Replied", n: c.replied, dot: "bg-good" },
+    { id: "read", label: "Read", n: c.read, dot: "bg-c1" },
+    { id: "delivered", label: "Delivered", n: c.delivered, dot: "bg-c2" },
+    { id: "sent", label: "Sent only", n: c.sent, dot: "bg-muted-foreground" },
+    { id: "failed", label: "Failed", n: c.failed, dot: "bg-bad" },
+  ]
+
+  const reasons = (
+    <div className="rounded-md border bg-card p-3">
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">Why messages failed</div>
+      {!failN ? <p className="text-sm text-muted-foreground">No message failed in this selection.</p> : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {causeList.map((x) => (
+            <li key={x.label} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3">
+              <span className="min-w-0"><span className="font-medium">{x.label}</span>
+                <span className="block text-xs text-muted-foreground"><span style={{ color: FAIL_BUCKETS[x.bucket].color }}>{FAIL_BUCKETS[x.bucket].title}</span> · {x.todo}</span>
+              </span>
+              <span className="tnum text-right"><b>{num(x.n)}</b><span className="block text-xs text-muted-foreground">{share(x.n, failN)} of failures</span></span>
+            </li>
+          ))}
+          {otherFail > 0 && <li className="flex items-baseline justify-between gap-3 text-muted-foreground"><span>Other reasons</span><span className="tnum">{num(otherFail)} · {share(otherFail, failN)}</span></li>}
+        </ul>
+      )}
+    </div>
+  )
+  const templatesPanel = (
+    <div className="rounded-md border bg-card p-3">
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">{st === "failed" ? "Templates with the most failures" : `Templates with the most ${st === "sent" ? "sent-only" : st} messages`}</div>
+      {!tpls.length ? <p className="text-sm text-muted-foreground">No template is recorded for these messages.</p> : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {tpls.map((t) => (
+            <li key={t.name} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1">
+              <span className="truncate" title={t.name}>{t.name}</span><span className="tnum"><b>{num(t.n)}</b> <span className="text-muted-foreground">· {share(t.n, n)}</span></span>
+              <span className="col-span-2 h-1.5 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-c1" style={{ width: `${(100 * t.n) / Math.max(1, tpls[0].n)}%` }} /></span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+  const meaning = (
+    <div className="rounded-md border bg-card p-3">
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">What this means</div>
+      <p className="text-sm">{STATUS_MEANING[st]}</p>
+      {STATUS_HINT[st] && <p className="mt-2 text-sm text-muted-foreground">{STATUS_HINT[st]}</p>}
+    </div>
+  )
+
+  return (
+    <section className="rounded-lg border bg-muted/20 p-3" aria-label={`Summary of ${STATUS_NAME[st] ?? "messages"}`}>
+      <p className="text-sm font-medium">{STATUS_NAME[st] ?? "Messages"}: summary for {when}, {what}</p>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{sentence}</p>
+      {ignored.length > 0 && <p className="mt-1 text-xs text-muted-foreground">The {ignored.join(" and ")} filter does not apply to the message list, so it does not change this summary.</p>}
+      <div className="mt-2.5 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(10.5rem, 1fr))" }}>
+        {tiles.map((t) => (
+          <div key={t.label} className="min-w-0 rounded-md border bg-card px-3 py-2" style={t.wide ? { gridColumn: "span 2" } : undefined}>
+            <div className="text-xs text-muted-foreground">{t.label}</div>
+            <div className={cn("tnum truncate font-semibold tracking-tight", t.small ? "text-sm leading-7" : "text-xl", t.tone === "good" && "text-good", t.tone === "bad" && "text-bad")} title={t.small ? String(t.value) : undefined}>{t.value}</div>
+            <div className="truncate text-xs text-muted-foreground" title={t.sub}>{t.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        {st === "all" ? (
+          <>
+            <div className="rounded-md border bg-card p-3">
+              <div className="mb-1.5 text-xs font-medium text-muted-foreground">Where each message stopped (each counted once, at the furthest step it reached)</div>
+              <ul className="flex flex-col gap-2 text-sm">
+                {stages.map((r) => (
+                  <li key={r.id} className="grid grid-cols-[0.6rem_6rem_minmax(0,1fr)] items-baseline gap-x-2">
+                    <span className={cn("mt-1.5 size-2 self-start rounded-full", r.dot)} />
+                    <span className="font-medium">{r.label}</span>
+                    <span><b className="tnum">{num(r.n)}</b> <span className="tnum text-muted-foreground">· {share(r.n)}</span>
+                      <span className="block text-xs leading-snug text-muted-foreground">{r.id === "failed" ? "It was never sent. The reasons are on the right." : STATUS_MEANING[r.id]}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {reasons}
+          </>
+        ) : st === "failed" ? <>{reasons}{templatesPanel}</> : <>{meaning}{templatesPanel}</>}
+      </div>
+    </section>
   )
 }
 
@@ -528,13 +735,13 @@ export function MessageLogCard({ params }: { params: Params }) {
     setExporting(true); setExportErr(undefined)
     try {
       const x = await api<any>("messages/log", { ...ask, page: 1, limit: 5000 })
-      const head = ["Sent (India time)", "Template", "Phone", "Result", "Delivered", "Read", "Replied", "Failure code", "Failure reason", "Who can fix it", ...(x.revealed ? ["Message"] : [])]
+      const head = ["Sent (India time)", "Template", "Phone", "Result", "Delivered", "Read", "Replied", "Failure code", "Failure reason", "Who can fix it", "Number check", "Name check", ...(x.revealed ? ["Message"] : [])]
       const body = x.rows.map((r: any) => {
-        const c = r.status === "failed" ? classify(r.reason) : null
+        const c = classifyMsg(r)
         return [
           csvCell(r.at?.replace("T", " ")), csvCell(r.template), x.revealed && r.phone ? `="${r.phone}"` : csvCell(r.phone), csvCell(LOG_STYLE[r.status]?.label ?? r.status),   // ="..." keeps Excel from turning the number into 9.19E+11
           csvCell(r.times.delivered?.replace("T", " ")), csvCell(r.times.read?.replace("T", " ")), csvCell(r.times.replied?.replace("T", " ")),
-          csvCell(c?.code), csvCell(c?.label), csvCell(c ? FAIL_BUCKETS[bucketOf(c.group.id)].title : ""), ...(x.revealed ? [csvCell(r.text)] : []),
+          csvCell(c?.code), csvCell(c?.label), csvCell(c ? FAIL_BUCKETS[bucketOf(c.group.id)].title : ""), csvCell(phoneIssue(r.phone_issue)?.label), csvCell(nameIssue(r.name_issue)?.label), ...(x.revealed ? [csvCell(r.text)] : []),
         ]
       })
       const text = "﻿" + [head.map(csvCell), ...body].map((l: string[]) => l.join(",")).join("\r\n")   // BOM so Excel reads Hindi names correctly
@@ -547,11 +754,7 @@ export function MessageLogCard({ params }: { params: Params }) {
 
   return (
     <ChartCard title="Every message we sent" description={data?.capturing ? `Every message we sent, newest first, with what happened to it and why it failed. ${canReveal ? "Use the “Show phone numbers and messages” switch at the top of the page to read the text. " : ""}Click a row to see the full story. Messages are saved from ${day(data.since)} on, so earlier ones are not listed. This list counts every message, so it can be higher than the numbers at the top, which count each person once per template.` : "Each message sent to a customer, with what happened to it and why it failed."}
-      actions={data?.capturing && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={exporting || !data.total} title={reveal && canReveal ? "Downloads every matching message, with full numbers and the message text" : "Downloads every matching message. Numbers and text stay hidden unless you switch them on at the top of the page first."}><Download className="size-3.5" />{exporting ? "Preparing…" : "Export CSV"}</Button>
-        </div>
-      )}>
+>
       {d.error ? <ErrorNote message={d.error} /> : !data ? <ChartSkeleton h={260} /> : !data.capturing ? (
         <div className="flex items-start gap-3 rounded-lg border border-dashed p-4 text-sm">
           <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -562,11 +765,12 @@ export function MessageLogCard({ params }: { params: Params }) {
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Show messages that were">
+          <div className="flex items-start gap-3">
+          <div className="flex flex-1 flex-wrap items-center justify-center gap-2" role="group" aria-label="Show messages that were">
             {LOG_STATUS.map((s) => {
               const n = data.counts[s.id], on = status === s.id
               return (
-                <button key={s.id} type="button" aria-pressed={on} onClick={() => setStatus(s.id)}
+                <button key={s.id} type="button" aria-pressed={on} onClick={() => setStatus(s.id)} title={s.id === "all" ? "Every message in this selection." : STATUS_MEANING[s.id]}
                   className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm transition-colors", on ? "border-foreground/30 bg-muted font-medium" : "text-muted-foreground hover:bg-muted/50", s.id === "failed" && n > 0 && !on && "text-bad")}>
                   {s.label}<span className="tnum text-xs text-muted-foreground">{num(n)}</span>
                 </button>
@@ -579,7 +783,10 @@ export function MessageLogCard({ params }: { params: Params }) {
               </div>
             )}
           </div>
-          <p className="-mt-2 text-center text-xs text-muted-foreground">Each message is counted once, at the furthest step it reached. For example, “Delivered” means delivered but not yet read.</p>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={exportCsv} disabled={exporting || !data.total} title={reveal && canReveal ? "Downloads every matching message, with full numbers and the message text" : "Downloads every matching message. Numbers and text stay hidden unless you switch them on at the top of the page first."}><Download className="size-3.5" />{exporting ? "Preparing…" : "Export CSV"}</Button>
+          </div>
+          <p className="-mt-2 text-center text-xs text-muted-foreground">Each message is counted once, at the furthest step it reached. “Delivered” means delivered but not yet read. “Sent only” means WhatsApp took the message but no delivery news came back (still on its way, phone off, or not reported). Hover a button for more.</p>
+          <StatusSummary data={data} params={params} />
           {exportErr && <ErrorNote message={exportErr} />}
           {data.rows.length === 0 ? <Empty>{status === "all" ? "No messages in this date range." : "No messages like that in this date range."}</Empty> : (
             <div className={cn("max-h-[34rem] overflow-auto rounded-lg border transition-opacity", d.loading && "opacity-60")}>
@@ -587,21 +794,25 @@ export function MessageLogCard({ params }: { params: Params }) {
                 {rs.colgroup}
                 <TableHeader className={STICKY_HEAD}>
                   <TableRow>
-                    {["Sent", "Template", "To", "Message", "What happened", "Why it failed"].map((t, i) => <TableHead key={t} className={cn("relative whitespace-nowrap text-center", rs.line)}>{t}{rs.handle(i)}</TableHead>)}
+                    {["Sent", "Template", "To", "Activity", "What happened", "Why it failed"].map((t, i) => <TableHead key={t} className={cn("relative whitespace-nowrap text-center", rs.line)}>{t}{rs.handle(i)}</TableHead>)}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.rows.map((r: any) => {
                     const st = LOG_STYLE[r.status] ?? LOG_STYLE.sent, isOpen = open === r.id
-                    const c = r.status === "failed" ? classify(r.reason) : null, B = c ? FAIL_BUCKETS[bucketOf(c.group.id)] : null
+                    const c = classifyMsg(r), B = c ? FAIL_BUCKETS[bucketOf(c.group.id)] : null
+                    const warn = [phoneIssue(r.phone_issue)?.label && `Number: ${phoneIssue(r.phone_issue)!.label}`, nameIssue(r.name_issue)?.label && `Name: ${nameIssue(r.name_issue)!.label}`].filter(Boolean).join(". ")
                     return [
                       <TableRow key={r.id} tabIndex={0} aria-expanded={isOpen} className={cn("cursor-pointer", isOpen && "bg-muted/40")} onClick={() => setOpen(isOpen ? null : r.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : r.id) } }}>
                         <TableCell className={cn("whitespace-nowrap text-center overflow-hidden text-ellipsis", rs.line)}><ChevronRight className={cn("mr-1 inline size-3.5 text-muted-foreground transition-transform", isOpen && "rotate-90")} aria-hidden />{whenAt(r.at)}</TableCell>
-                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}><span className="block max-w-[16rem] truncate font-medium" title={r.template}>{r.template}</span></TableCell>
-                        <TableCell className={cn("whitespace-nowrap text-center overflow-hidden text-ellipsis", rs.line)}>{r.phone || "—"}</TableCell>
-                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}>{data.revealed ? (r.text ? <span className="block max-w-[22rem] truncate" title={r.text}>{r.text.replace(/\s+/g, " ").trim()}</span> : <span className="text-muted-foreground">Not saved</span>) : <span className="text-muted-foreground">Hidden</span>}</TableCell>
+                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}><span className="mx-auto block max-w-[16rem] truncate font-medium" title={r.template}>{r.template}</span></TableCell>
+                        <TableCell className={cn("whitespace-nowrap text-center overflow-hidden text-ellipsis", rs.line)}>{r.phone || "—"}{warn && <TriangleAlert className="ml-1.5 inline size-3.5 text-warn" aria-label={warn}><title>{warn}</title></TriangleAlert>}</TableCell>
+                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}><span className="mx-auto block max-w-[26rem] truncate" title={activityLine(r, !!data.revealed)}>{activityLine(r, !!data.revealed)}</span></TableCell>
                         <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}><span className={cn("inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium", st.cls)}>{st.label}</span></TableCell>
-                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}>{c && B ? <span className="flex flex-col"><span>{c.label}</span><span className="text-xs" style={{ color: B.color }}>{B.title}</span></span> : <span className="text-muted-foreground">—</span>}</TableCell>
+                        <TableCell className={cn("text-center overflow-hidden text-ellipsis", rs.line)}>{c && B ? (c.because
+                          ? <span className="mx-auto flex max-w-[22rem] flex-col whitespace-normal text-center"><span>Most likely because {c.because}.</span><span className="text-xs text-muted-foreground">WhatsApp said: {c.via}</span></span>
+                          : <span className="flex flex-col"><span>{c.label}</span><span className="text-xs" style={{ color: B.color }}>{B.title}</span></span>)
+                        : <span className="text-muted-foreground">—</span>}</TableCell>
                       </TableRow>,
                       isOpen && <TableRow key={r.id + "-detail"} className="bg-muted/20 hover:bg-muted/20"><TableCell colSpan={6} className="whitespace-normal p-0"><LogDetail r={r} revealed={!!data.revealed} canReveal={canReveal} /></TableCell></TableRow>,
                     ]

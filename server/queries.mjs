@@ -2,6 +2,8 @@
 // Filters arrive as query-string values: from, to (YYYY-MM-DD), and '|'-separated lists: templates, sources, owners, statuses.
 import { makeCosts } from './costs.mjs'
 import { makeChats } from './chats.mjs'
+import { makeAgents } from './agents.mjs'
+import { PHONE_SQL, NAME_SQL, NAMES_CTE } from './validate.mjs'
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 const LIST = (v) => (v == null || v === '' ? [] : String(v).split('|').map((s) => s.trim()).filter(Boolean))
@@ -319,7 +321,7 @@ export function makeApi(ctx) {
       moves: [['Nurturing', l.to_nurturing], ['Not connected', l.to_not_connected], ['Unqualified', l.to_unqualified]].filter(([, v]) => v === 1).map(([label]) => label) }))
     const oppOut = opps.map((o) => ({ opportunity_id: o.opportunity_id, name: nameOut(o.customer_name), status: o.opportunity_status, owner: o.opp_owner, created: o.created_ts, updated: o.updated_ts,
       steps: [['Customer details sent to salesperson', o.details_to_salesperson], ['Salesperson details sent to customer', o.details_to_customer], ['48-hour customer follow-up', o.followup_48h], ['24-hour customer follow-up', o.followup_24h]].map(([label, v]) => ({ label, done: v === 1 })) }))
-    const totals = msgs.reduce((t, r) => ({ templates: t.templates + 1, attempts: t.attempts + r.attempts_est, measured: t.measured + r.measured_attempts, delivered: t.delivered + r.delivered_adj, read: t.read + r.read_adj, replied: t.replied + r.replied, failed: t.failed + r.failed, unmeasured: t.unmeasured + r.unmeasured_sends }), { templates: 0, attempts: 0, measured: 0, delivered: 0, read: 0, replied: 0, failed: 0, unmeasured: 0 })
+    const totals = msgs.reduce((t, r) => ({ templates: t.templates + 1, attempts: t.attempts + r.attempts_est, measured: t.measured + r.measured_attempts, delivered: t.delivered + Math.min(r.delivered_adj, r.measured_attempts), read: t.read + Math.min(r.read_adj, r.measured_attempts), replied: t.replied + Math.min(r.replied, r.measured_attempts), failed: t.failed + r.failed, unmeasured: t.unmeasured + r.unmeasured_sends }), { templates: 0, attempts: 0, measured: 0, delivered: 0, read: 0, replied: 0, failed: 0, unmeasured: 0 })
 
     const notes = []
     if (!phone10) notes.push({ tone: 'warn', text: kind === 'l' ? "This lead's phone number was replaced by text in the database, so its WhatsApp messages cannot be linked yet. A Salesforce backfill restores it." : 'No usable phone number on this record, so its WhatsApp messages cannot be linked.' })
@@ -498,27 +500,32 @@ export function makeApi(ctx) {
   // One row per message, from reporting.v_message_log (built from the events n8n saves). Only messages saved since the save step started are in it.
   // Phones are masked and the message text is left out unless the caller asks with reveal=1 and ALLOW_REVEAL is not false (same gate as the customer page).
   // limit lets the CSV export fetch up to 5000 rows; the table asks for 25 per page.
+  // Whether the failure-events view exists. Asked at most every 5 minutes (it used to be a database round trip on every request).
+  let rejectedProbe = { ok: null, at: 0 }
+  async function hasRejected() {
+    if (rejectedProbe.ok !== null && Date.now() - rejectedProbe.at < 300_000) return rejectedProbe.ok
+    let ok = true
+    try { await Q(`select 1 from reporting.v_failure_events limit 1`) } catch { ok = false }
+    rejectedProbe = { ok, at: Date.now() }
+    return ok
+  }
   async function messagesLog(q) {
-    let t
-    try { [t] = await Q(`select count(*)::int as n, to_char(min(coalesce(sent_at, failed_at) at time zone 'Asia/Kolkata'), 'YYYY-MM-DD') as since from reporting.v_message_log`) }
-    catch { return { capturing: false, setup: true } }   // the view is not installed yet
-    if (!t.n) return { capturing: false }
     const show = reveal(q)
     const limit = Math.min(5000, Math.max(1, parseInt(q.limit, 10) || 25)), page = Math.max(1, parseInt(q.page, 10) || 1)
     const digits = show ? String(q.search ?? '').replace(/\D/g, '') : ''
     // WATI sometimes refuses a template before WhatsApp ever sees it ("Missing information..."). Those failures have no WhatsApp message id,
     // no phone and no template name, so v_message_log (one row per message id) drops them while the failure-reasons card still counts them.
     // They are added here from v_failure_events, keyed by WATI's own localMessageId, so the list and the card agree. Needs no database change.
-    let withRejected = true
-    try { await Q(`select 1 from reporting.v_failure_events limit 1`) } catch { withRejected = false }
+    const withRejected = await hasRejected()
     const src = `select whatsapp_message_id, wa_id, template_name, message_text, sent_at, delivered_at, read_at, replied_at, failed_at, failed_code, failed_detail from reporting.v_message_log`
       + (withRejected ? ` union all
         select 'wati-local:' || coalesce(nullif(e.raw_payload->>'localMessageId', ''), md5(e.raw_payload::text)), null::text, e.template_name, null::text,
           null::timestamptz, null::timestamptz, null::timestamptz, null::timestamptz, e.received_at, e.raw_payload->>'failedCode', e.raw_payload->>'failedDetail'
         from reporting.v_failure_events e where e.whatsapp_message_id is null` : '')
     const base = `(select l.*, coalesce(l.sent_at, l.failed_at) as at_utc, (coalesce(l.sent_at, l.failed_at) at time zone 'Asia/Kolkata')::date as d,
-        case when l.failed_at is not null then 'failed' when l.replied_at is not null then 'replied' when l.read_at is not null then 'read' when l.delivered_at is not null then 'delivered' else 'sent' end as status
-      from (${src}) l) f`
+        case when l.failed_at is not null then 'failed' when l.replied_at is not null then 'replied' when l.read_at is not null then 'read' when l.delivered_at is not null then 'delivered' else 'sent' end as status,
+        ${PHONE_SQL('l.wa_id')} as ph_issue, ${NAME_SQL('nm.name')} as name_issue   -- regex checks on the number and on the lead's name (server/validate.mjs)
+      from lg l left join nm on nm.phone10 = right(regexp_replace(l.wa_id, '\\D', '', 'g'), 10)) f`
     const mk = (lists) => {
       const w = where(q, { date: 'f.d', lists })
       if (digits.length >= 4) w.sql += (w.sql ? ' and ' : 'where ') + `f.wa_id like ${w.ph('%' + digits + '%')}`
@@ -526,20 +533,78 @@ export function makeApi(ctx) {
     }
     const wAll = mk({ 'f.template_name': 'templates' }), wRows = mk({ 'f.template_name': 'templates', 'f.status': 'status' })
     const IST = (c) => TS(`${c} at time zone 'Asia/Kolkata'`)
-    const counts = await Q(`select f.status, count(*)::int as n from ${base} ${wAll.sql} group by 1`, wAll.args)
-    const rows = await Q(`select f.whatsapp_message_id as id, f.template_name, f.wa_id, f.status, f.failed_code, f.failed_detail, f.message_text,
-        ${IST('f.at_utc')} as at, ${IST('f.sent_at')} as sent_at, ${IST('f.delivered_at')} as delivered_at, ${IST('f.read_at')} as read_at, ${IST('f.replied_at')} as replied_at, ${IST('f.failed_at')} as failed_at
-      from ${base} ${wRows.sql} order by f.at_utc desc, f.whatsapp_message_id limit ${limit} offset ${(page - 1) * limit}`, wRows.args)
+    const pickedStatus = LIST(q.status)
+    const focusCond = pickedStatus.length ? `status = any(${wAll.ph(pickedStatus)}::text[])` : 'true'   // the summary follows the selected status button
+    // Three independent queries, run at the same time (they used to run one after another, and the totals read the whole log six times):
+    //  1. since: the first day in the log (also tells us when the view is missing or empty)
+    //  2. the button counts and the summary, from ONE pass over the filtered log (button counts ignore the selected status; the summary follows it)
+    //  3. the page of rows
+    const [tRes, aggRes, rowsRes] = await Promise.allSettled([
+      Q(`select count(*)::int as n, to_char(min(coalesce(sent_at, failed_at) at time zone 'Asia/Kolkata'), 'YYYY-MM-DD') as since from reporting.v_message_log`),
+      // b = the log for the date and template filters (gives the counts on the status buttons); p = b narrowed to the selected status button (the summary under the buttons)
+      Q(`with lg as materialized (${src}), ${NAMES_CTE('lg')}, b as materialized (select f.status, f.wa_id, f.template_name, f.failed_code, f.failed_detail, f.at_utc, f.sent_at, f.delivered_at, f.read_at, f.replied_at, f.failed_at, f.ph_issue, f.name_issue from ${base} ${wAll.sql}),
+        p as (select * from b where ${focusCond}),
+        lagq as (select extract(epoch from ((case status when 'replied' then replied_at when 'read' then read_at when 'delivered' then delivered_at when 'failed' then failed_at end) - sent_at)) / 60.0 as m from p where sent_at is not null)
+        select
+          (select coalesce(json_object_agg(status, n), '{}'::json) from (select status, count(*)::int as n from b group by 1) x) as counts,
+          (select count(*)::int from p) as focus_n,
+          (select count(distinct wa_id)::int from p) as people,
+          (select count(distinct template_name)::int from p) as templates,
+          (select coalesce(json_agg(x), '[]'::json) from (select template_name as name, count(*)::int as n from p where template_name is not null group by 1 order by 2 desc, 1 limit 5) x) as top_templates,
+          (select coalesce(json_agg(x), '[]'::json) from (select failed_code as code, max(failed_detail) as detail, count(*)::int as n from p where status = 'failed' group by 1 order by 3 desc, 1 limit 4) x) as failures,
+          (select percentile_cont(0.5) within group (order by m) from lagq where m >= 0) as lag_median,
+          (select percentile_cont(0.9) within group (order by m) from lagq where m >= 0) as lag_p90,
+          (select count(*)::int from lagq where m >= 0) as lag_n,
+          (select count(*)::int from p where status = 'sent' and at_utc > now() - interval '1 hour') as sent_recent,
+          (select count(*)::int from p where status = 'sent' and at_utc <= now() - interval '24 hours') as sent_old`, wAll.args),
+      Q(`with lg as materialized (${src}), ${NAMES_CTE('lg')} select f.whatsapp_message_id as id, f.template_name, f.wa_id, f.status, f.failed_code, f.failed_detail, f.message_text, f.ph_issue, f.name_issue, length(regexp_replace(coalesce(f.wa_id, ''), '\D', '', 'g')) as ph_len,
+          ${IST('f.at_utc')} as at, ${IST('f.sent_at')} as sent_at, ${IST('f.delivered_at')} as delivered_at, ${IST('f.read_at')} as read_at, ${IST('f.replied_at')} as replied_at, ${IST('f.failed_at')} as failed_at
+        from ${base} ${wRows.sql} order by f.at_utc desc, f.whatsapp_message_id limit ${limit} offset ${(page - 1) * limit}`, wRows.args),
+    ])
+    if (tRes.status === 'rejected') return { capturing: false, setup: true }   // the view is not installed yet
+    const t = tRes.value[0]
+    if (!t.n) return { capturing: false }
+    if (aggRes.status === 'rejected') throw aggRes.reason
+    if (rowsRes.status === 'rejected') throw rowsRes.reason
+    const agg = aggRes.value[0], rows = rowsRes.value
+    const counts = Object.entries(agg.counts ?? {}).map(([status, n]) => ({ status, n }))
+    // Customer names for the "WhatsApp message sent to <name> (<number>)" line: from the Salesforce lead or opportunity with the same phone number (newest wins,
+    // a "name" that is really a phone number is ignored). Only looked up, and only sent, when the caller has switched reveal on: a name is personal data, like the number.
+    const nameOf = new Map()
+    const need = show ? [...new Set(rows.map((r) => String(r.wa_id ?? '').replace(/\D/g, '').slice(-10)).filter((p) => p.length === 10))] : []
+    if (need.length) {
+      try {
+        const found = await Q(`select phone10, name from (
+            select phone10, customer_name as name, created_at as at from reporting.v_leads where phone10 = any($1::text[])
+            union all select phone10, customer_name, created_at from reporting.v_opps where phone10 = any($1::text[])) x
+          where coalesce(trim(name), '') <> '' and name !~ '^[0-9+ ()-]{7,}$' order by at desc nulls last`, [need])
+        for (const f of found) if (!nameOf.has(f.phone10)) nameOf.set(f.phone10, String(f.name).trim())
+      } catch { /* the lead views are not there: the line then shows the number only */ }
+    }
     const by = Object.fromEntries(counts.map((c) => [c.status, c.n]))
     const picked = LIST(q.status), total = picked.length ? picked.reduce((s, k) => s + (by[k] ?? 0), 0) : counts.reduce((s, c) => s + c.n, 0)   // the same filters as the rows, so no second count query
     return {
       capturing: true, since: t.since, revealed: show, canReveal: process.env.ALLOW_REVEAL !== 'false', total, page, limit,
+      // Summary of the selected status button (all statuses when none is selected), for the same date and template filters
+      summary: {
+        status: pickedStatus.length === 1 ? pickedStatus[0] : 'all', n: agg.focus_n ?? 0,
+        people: agg.people ?? 0, templates: agg.templates ?? 0,
+        topTemplates: (agg.top_templates ?? []).map((t) => ({ name: t.name, n: t.n })),
+        // the most common failure codes with a sample wording, for the "why" part (the page groups them into plain-English causes)
+        failures: (agg.failures ?? []).map((f) => ({ reason: [asText(f.code), asText(f.detail)].filter(Boolean).join(' · ').replace(/\d{7,}/g, '…').slice(0, 140) || null, n: f.n })),
+        // how long the last step took after sending (minutes): the typical message and the slow end (9 in 10 are quicker). Only meaningful for one status.
+        lag: agg.lag_n ? { median: Number(agg.lag_median), p90: Number(agg.lag_p90), n: agg.lag_n } : null,
+        // messages with no delivery news at all: how many are very recent (probably still on their way) and how many are over a day old
+        sentRecent: agg.sent_recent ?? 0, sentOld: agg.sent_old ?? 0,
+      },
       counts: { all: counts.reduce((s, c) => s + c.n, 0), failed: by.failed ?? 0, replied: by.replied ?? 0, read: by.read ?? 0, delivered: by.delivered ?? 0, sent: by.sent ?? 0 },
       rows: rows.map((r) => ({
         id: r.id, at: r.at, template: r.template_name || '(template unknown)', status: r.status,
         phone: show ? String(r.wa_id ?? '').replace(/\D/g, '') : MASK(r.wa_id),
+        name: show ? nameOf.get(String(r.wa_id ?? '').replace(/\D/g, '').slice(-10)) ?? null : undefined,
         times: { sent: r.sent_at, delivered: r.delivered_at, read: r.read_at, replied: r.replied_at, failed: r.failed_at },
         reason: r.status === 'failed' ? ([asText(r.failed_code), asText(r.failed_detail)].filter(Boolean).join(' · ').replace(/\d{7,}/g, '…').slice(0, 140) || null) : null,
+        phone_issue: r.ph_issue ?? null, phone_digits: r.ph_len ?? null, name_issue: r.name_issue && r.name_issue !== 'ok' ? r.name_issue : null,
         has_text: !!r.message_text, text: show ? r.message_text ?? null : undefined,
         rejected: String(r.id).startsWith('wati-local:'),   // refused by WATI before it reached WhatsApp: no WhatsApp id, phone or template saved
       })),
@@ -548,14 +613,18 @@ export function makeApi(ctx) {
 
   // ---------- meta ----------
   async function meta() {
-    const [mr] = await Q(`select min(first_sent_date)::text as min, max(first_sent_date)::text as max from ${MSG}`)
-    const [lr] = await Q(`select min(created_date)::text as min, max(created_date)::text as max from reporting.v_leads`)
-    const [or] = await Q(`select min(created_date)::text as min, max(created_date)::text as max from reporting.v_opps`)
-    const templates = (await Q(`select template_name as v from ${MSG} group by 1 order by sum(attempts_est) desc`)).map((r) => r.v)
-    const sources = (await Q(`select lead_source as v from reporting.v_leads group by 1 order by count(*) desc`)).map((r) => r.v)
-    const leadStatuses = (await Q(`select lead_status as v from reporting.v_leads group by 1 order by count(*) desc`)).map((r) => r.v)
-    const owners = (await Q(`select v from (select lead_owner as v, count(*) n from reporting.v_leads group by 1 union all select opp_owner, count(*) from reporting.v_opps group by 1) t group by v order by sum(n) desc`)).map((r) => r.v)
-    const oppStatuses = (await Q(`select opportunity_status as v from reporting.v_opps group by 1 order by count(*) desc`)).map((r) => r.v)
+    // all seven lookups at once (they used to run one after another, which made the first screen wait for the sum of them)
+    const [[mr], [lr], [or], tRows, sRows, lsRows, oRows, osRows] = await Promise.all([
+      Q(`select min(first_sent_date)::text as min, max(first_sent_date)::text as max from ${MSG}`),
+      Q(`select min(created_date)::text as min, max(created_date)::text as max from reporting.v_leads`),
+      Q(`select min(created_date)::text as min, max(created_date)::text as max from reporting.v_opps`),
+      Q(`select template_name as v from ${MSG} group by 1 order by sum(attempts_est) desc`),
+      Q(`select lead_source as v from reporting.v_leads group by 1 order by count(*) desc`),
+      Q(`select lead_status as v from reporting.v_leads group by 1 order by count(*) desc`),
+      Q(`select v from (select lead_owner as v, count(*) n from reporting.v_leads group by 1 union all select opp_owner, count(*) from reporting.v_opps group by 1) t group by v order by sum(n) desc`),
+      Q(`select opportunity_status as v from reporting.v_opps group by 1 order by count(*) desc`),
+    ])
+    const [templates, sources, leadStatuses, owners, oppStatuses] = [tRows, sRows, lsRows, oRows, osRows].map((rows) => rows.map((r) => r.v))
     return { mode: ctx.mode, asOf: ctx.asOf, messages: mr, leads: lr, opportunities: or, templates, sources: [...sources, '(no matching lead)'], owners, leadStatuses, oppStatuses, staleDays: STALE_DAYS, canReveal: process.env.ALLOW_REVEAL !== 'false' }
   }
 
@@ -568,6 +637,7 @@ export function makeApi(ctx) {
     'customers/search': customersSearch, 'customers/detail': customerDetail,
     ...makeCosts({ Q, MSG, msgWhere, asOf: ctx.asOf }),
     ...makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
+    ...makeAgents({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
     'inbox/kpis': inboxKpis, 'inbox/trend': inboxTrend, 'inbox/operators': inboxOperators, 'inbox/by-time': inboxByTime, 'inbox/duration': inboxDuration, 'inbox/heatmap': inboxHeatmap, 'inbox/waiting': inboxWaiting,
     'health/feed': healthFeed, 'health/gaps': healthGaps, 'health/facts': healthFacts,
   }

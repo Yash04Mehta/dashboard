@@ -4,7 +4,7 @@ export const COLOR: Record<string, string> = { MARKETING: "var(--c3)", UTILITY: 
 
 /**
  * Prices every template from a costs/summary answer. Shared by the Costs page (which adds what-if prices and a free-utility share)
- * and by the template panel on Messages v1 (which uses the plain prices).
+ * and by the template panel on Messages(which uses the plain prices).
  * `over` = typed what-if price per category ("" or missing = use the rate card), `f` = share of utility messages that cost nothing (0 to 1).
  */
 export function priceTemplates(d: any, over: Record<string, string> = {}, f = 0) {

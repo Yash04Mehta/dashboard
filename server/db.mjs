@@ -33,28 +33,31 @@ export async function connect() {
     const pg = (await import('pg')).default
     pg.types.setTypeParser(20, (v) => Number(v))     // bigint
     pg.types.setTypeParser(1700, (v) => Number(v))   // numeric
+    // Speed: the database is far away (about 0.14 s per round trip), so every trip counts.
+    //  - Connections stay open for 30 minutes when idle (they used to close after 10 s, so every burst of requests paid for new secure connections) and 8 can work at once.
+    //  - READ ONLY is a setting of the connection itself (sent when it opens: default_transaction_read_only) instead of wrapping every query in begin ... commit,
+    //    which cost 3 round trips per query instead of 1. The database still refuses every write. This is proved below before the server starts answering,
+    //    and the login itself (dashboard_ro) can only read anyway.
     const pool = new pg.Pool({
       ...liveConfig(),
       ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
-      max: 4,
+      options: '-c default_transaction_read_only=on',
+      max: 8, idleTimeoutMillis: 30 * 60_000, connectionTimeoutMillis: 30_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000,
     })
-    // every query runs inside an explicit READ ONLY transaction: the database itself refuses any write
-    const query = async (sql, args = []) => {
-      const client = await pool.connect()
-      try {
-        await client.query('begin read only')
-        const r = await client.query(sql, args)
-        await client.query('commit')
-        return r.rows
-      } catch (e) {
-        try { await client.query('rollback') } catch { /* connection already closed */ }
-        throw e
-      } finally { client.release() }
-    }
+    pool.on('error', (e) => console.error('[db] idle connection dropped:', e.message))
+    const query = async (sql, args = []) => (await pool.query(sql, args)).rows
     try { await query('select 1 from reporting.v_leads limit 1'); await query('select 1 from reporting.v_message_rows limit 1') }
     catch (e) { throw new Error('Live mode: the reporting views are missing or not readable (' + e.message + '). Run server/sql/reporting_views.sql and server/sql/app.sql first.') }
+    // proof that writes are refused on a pooled connection: creating a temporary table must fail with a read-only error
+    let refused = false
+    try { await query('create temp table _aq_readonly_probe (a int)') } catch (e) { refused = /read-only/i.test(e.message) }
+    if (!refused) throw new Error('Live mode stopped: the database connection is not read-only. The dashboard must never be able to write.')
     const [{ d }] = await query('select current_date::text as d')
-    return { mode: 'live', query, MSG: 'reporting.v_message_rows', asOf: d, cacheMs: 60_000 }
+    const live = { mode: 'live', query, MSG: 'reporting.v_message_rows', asOf: d, cacheMs: 60_000 }
+    // keep "today" right when the server runs for days, and keep a few connections open so the first page load does not pay for them
+    setInterval(async () => { try { live.asOf = (await query('select current_date::text as d'))[0].d } catch { /* keep the old date */ } }, 10 * 60_000).unref()
+    await Promise.all(Array.from({ length: 6 }, () => query('select 1').catch(() => {})))
+    return live
   }
 
   const { PGlite } = await import('@electric-sql/pglite')

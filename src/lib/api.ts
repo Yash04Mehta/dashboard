@@ -16,6 +16,7 @@ export async function api<T = any>(path: string, params: Params = {}, signal?: A
   // It used to be turned into an empty answer, which made a page read .rows of nothing and go blank.
   let j: any = null
   try { j = await r.json() } catch (e: any) { if (e?.name === "AbortError") throw e }
+  if (r.status === 401) window.dispatchEvent(new Event("aq-unauth"))   // the login ended: AuthGate shows the login screen again
   if (!r.ok) throw new Error(j?.error || `Request failed (${r.status})`)
   if (j === null) throw new Error("The server sent an answer the page could not read. Press Refresh to try again.")
   return j

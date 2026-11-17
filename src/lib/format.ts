@@ -34,8 +34,9 @@ export function duration(min: number | null | undefined) {
   if (min == null) return "—"
   if (min < 1) return "under a minute"
   if (min < 60) return `${Math.round(min)} min`
-  if (min < 1440) return `${(min / 60).toFixed(1).replace(/\.0$/, "")} hours`
-  return `${(min / 1440).toFixed(1).replace(/\.0$/, "")} days`
+  const unit = (v: number, one: string) => { const s = v.toFixed(1).replace(/\.0$/, ""); return `${s} ${s === "1" ? one : one + "s"}` }
+  if (min < 1440) return unit(min / 60, "hour")
+  return unit(min / 1440, "day")
 }
 export const hourLabel = (h: number) => (h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`)
 

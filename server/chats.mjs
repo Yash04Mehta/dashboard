@@ -223,12 +223,20 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
   // ---- messages (not chats): these follow the date of the message itself, and ignore the team member filter
   const MSGS = `(select *, at_ist::date as d from reporting.v_chat_messages) x`
   const msgWhere = (q, extra) => where(q, { date: 'x.d', extra })
+  // The same, plus the Agent filter: only messages in chats owned by the chosen agents (owner as in the chat list). pre goes in front of the select.
+  async function ownedMsgs(q, extra) {
+    const w = msgWhere(q, extra)
+    const owners = String(q.owners ?? '').split('|').map((s) => s.trim()).filter(Boolean)
+    if (!owners.length) return { sql: w.sql, args: w.args, pre: '' }
+    const clause = `x.chat_key in (select ch.chat_key from ch where ch.owner = any(${w.ph(owners)}::text[]))`
+    return { sql: w.sql ? `${w.sql} and ${clause}` : `where ${clause}`, args: w.args, pre: await base() }
+  }
   const needsViewUpdate = (e) => /column .* does not exist/i.test(e.message)   // the view is older than this page: run chats.sql again
 
   // WATI's "Sent vs received messages": what we sent (templates that did not fail, plus team replies) against what customers sent
   async function flow(q) {
-    const g = grain(q); const w = msgWhere(q)
-    const rows = await Q(`select to_char(date_trunc('${g}', x.d), 'YYYY-MM-DD') as period,
+    const g = grain(q); const w = await ownedMsgs(q)
+    const rows = await Q(`${w.pre} select to_char(date_trunc('${g}', x.d), 'YYYY-MM-DD') as period,
         count(*) filter (where x.direction in ('template', 'session') and x.failed_at is null)::int as sent,
         count(*) filter (where x.direction = 'inbound')::int as received,
         count(*) filter (where x.direction = 'template' and x.failed_at is not null)::int as failed
@@ -238,9 +246,9 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
 
   // WATI's "Sent messages by type" and "Total messages by type": text, image, template, ...
   async function messageTypes(q) {
-    const w = msgWhere(q)
+    const w = await ownedMsgs(q)
     try {
-      const rows = await Q(`select coalesce(x.message_type, 'unknown') as type,
+      const rows = await Q(`${w.pre} select coalesce(x.message_type, 'unknown') as type,
           count(*) filter (where x.direction in ('template', 'session') and x.failed_at is null)::int as sent,
           count(*) filter (where x.direction = 'inbound')::int as received
         from ${MSGS} ${w.sql} group by 1 order by 2 desc, 3 desc, 1`, w.args)
@@ -250,9 +258,9 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
 
   // WATI's "Message delivery status": each template message counted once, at the furthest step it reached
   async function delivery(q) {
-    const w = msgWhere(q, ["x.direction = 'template'"])
+    const w = await ownedMsgs(q, ["x.direction = 'template'"])
     try {
-      const [r] = await Q(`select count(*)::int as total,
+      const [r] = await Q(`${w.pre} select count(*)::int as total,
           count(*) filter (where x.failed_at is not null)::int as failed,
           count(*) filter (where x.failed_at is null and x.replied_at is not null)::int as replied,
           count(*) filter (where x.failed_at is null and x.replied_at is null and x.read_at is not null)::int as read_,
@@ -271,37 +279,41 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
   const WATI = `(select *, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations where status is distinct from 'broadcast') c`
   const watiMissing = (e) => /v_wati_conversations/.test(e.message) && /(does not exist|permission denied)/.test(e.message)
 
+  const WOWN = { 'coalesce(c.assignee_name, c.assignee_id)': 'owners' }   // the Agent filter on WATI's own rows
   async function watiStatus(q) {
     try {
-      const w = where(q, { date: 'c.d' })
+      const w = where(q, { date: 'c.d', lists: WOWN })
       const [live] = await Q(`select count(*)::int as known, count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending,
           to_char(max(c.evaluated_at) at time zone 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS') as evaluated_at from ${WATI}`)
       if (!live.known) return { available: false }
+      const wl = where(q, { date: null, lists: WOWN, extra: ["c.status in ('open', 'pending')"] })
+      const [lv] = await Q(`select count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending from ${WATI} ${wl.sql}`, wl.args)
       const [p] = await Q(`select count(*)::int as total,
           count(*) filter (where c.status = 'solved')::int as solved,
           count(*) filter (where c.status = 'solved' and c.assignee_is_bot)::int as solved_by_bot,
           count(*) filter (where c.status = 'solved' and not c.assignee_is_bot)::int as solved_by_operator,
           count(*) filter (where c.assignment = 'unassigned')::int as unassigned
         from ${WATI} ${w.sql}`, w.args)
-      const wx = where(q, { date: 'c.xd', extra: ["c.status = 'expired'"] })
+      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'"] })
       const [x] = await Q(`select count(*)::int as expired, count(*) filter (where c.assignment = 'assigned' and c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql}`, wx.args)
-      return { available: true, evaluated_at: live.evaluated_at, live: { open: live.open, pending: live.pending }, period: { ...p, expired: x.expired, missed: x.missed } }
+      return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending }, period: { ...p, expired: x.expired, missed: x.missed } }
     } catch (e) { if (watiMissing(e)) return { available: false }; throw e }
   }
 
   async function watiOperators(q) {
     try {
-      const w = where(q, { date: 'c.d', extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null'] })
+      const w = where(q, { date: 'c.d', lists: WOWN, extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null'] })
       // Assigned and Solved follow the day the customer last wrote. Expired and Missed follow the day the chat expired (like WATI's Operator Performance). Open and Pending are right now.
       const per = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot,
           count(*)::int as assigned, count(*) filter (where c.status = 'solved')::int as solved
         from ${WATI} ${w.sql} group by 1`, w.args)
-      const wx = where(q, { date: 'c.xd', extra: ["c.status = 'expired'", "c.assignment = 'assigned'", 'c.assignee_id is not null'] })
+      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'", "c.assignment = 'assigned'", 'c.assignee_id is not null'] })
       const exp = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot, count(*)::int as expired,
           count(*) filter (where c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql} group by 1`, wx.args)
+      const wn = where(q, { date: null, lists: WOWN, extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null', "c.status in ('open', 'pending')"] })
       const now = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot,
           count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending
-        from ${WATI} where c.assignment = 'assigned' and c.assignee_id is not null and c.status in ('open', 'pending') group by 1`)
+        from ${WATI} ${wn.sql} group by 1`, wn.args)
       const by = new Map(per.map((r) => [r.operator, { ...r, open: 0, pending: 0, expired: 0, missed: 0 }]))
       const blank = (o) => ({ operator: o.operator, is_bot: o.is_bot, assigned: 0, solved: 0, expired: 0, missed: 0, open: 0, pending: 0 })
       for (const n of now) by.set(n.operator, { ...(by.get(n.operator) ?? blank(n)), open: n.open, pending: n.pending })
@@ -313,7 +325,7 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
 
   async function watiTags(q) {
     try {
-      const w = where(q, { date: 'c.d' })
+      const w = where(q, { date: 'c.d', lists: WOWN })
       const rows = await Q(`select coalesce(t ->> 'name', t ->> 'id') as tag, count(*)::int as chats from ${WATI}, jsonb_array_elements(c.tags) t ${w.sql} group by 1 order by 2 desc, 1 limit 20`, w.args)
       return { rows }
     } catch (e) { if (watiMissing(e)) return { rows: [] }; throw e }

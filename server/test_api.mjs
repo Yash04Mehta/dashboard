@@ -4,8 +4,18 @@ import http from 'node:http'
 const BASE = process.env.BASE || 'http://127.0.0.1:8787'
 let pass = 0, fail = 0
 const ok = (name, cond, detail) => { if (cond) { pass++; console.log('  PASS  ' + name) } else { fail++; console.log('  FAIL  ' + name + (detail !== undefined ? '   -> ' + JSON.stringify(detail) : '')) } }
-const get = async (p) => { const r = await fetch(BASE + '/api/' + p); const j = await r.json(); if (!r.ok) throw new Error(p + ': ' + (j.error || r.status)); return j }
+// every /api route needs the demo login: log in once and send the session cookie with each request
+const loginRes = await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: process.env.DEMO_USER || 'admin', password: process.env.DEMO_PASS || 'pass@123' }) })
+const COOKIE = (loginRes.headers.get('set-cookie') || '').split(';')[0]
+const authed = (url, opt = {}) => fetch(url, { ...opt, headers: { ...(opt.headers || {}), Cookie: COOKIE } })
+const get = async (p) => { const r = await authed(BASE + '/api/' + p); const j = await r.json(); if (!r.ok) throw new Error(p + ': ' + (j.error || r.status)); return j }
 const section = (t) => console.log('\n=== ' + t + ' ===')
+
+section('login')
+ok('the demo login (admin) is accepted and sets a session cookie', loginRes.status === 200 && COOKIE.startsWith('aq_session=') && /HttpOnly/i.test(loginRes.headers.get('set-cookie') || ''))
+ok('without the login the data is refused (401)', (await fetch(BASE + '/api/meta')).status === 401)
+ok('a wrong password is refused (401) and sets no session', await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'nope' }) }).then((r) => r.status === 401 && !r.headers.get('set-cookie')))
+ok('/api/session says who is logged in', (await (await authed(BASE + '/api/session')).json()).authenticated === true && (await (await fetch(BASE + '/api/session')).json()).authenticated === false)
 
 section('meta')
 const meta = await get('meta')
@@ -195,11 +205,12 @@ section('report (downloadable report: works in any mode, checks that tables add 
 }
 
 section('robustness')
-ok('unknown endpoint gives a clean 404 message', await fetch(BASE + '/api/nope').then(async (r) => r.status === 404 && (await r.json()).error.includes('Unknown')))
+ok('unknown endpoint gives a clean 404 message', await authed(BASE + '/api/nope').then(async (r) => r.status === 404 && (await r.json()).error.includes('Unknown')))
 ok('SQL-looking input in a filter is treated as data', (await get('messages/kpis?templates=' + encodeURIComponent("x'; drop table app_msg; --"))).current.measured === 0 && (await get('messages/kpis')).current.measured === 263093)
 ok('a bad date is ignored, not an error', (await get('messages/kpis?from=garbage')).current.measured === 263093)
 ok('a bad grain falls back to month', (await get('messages/trend?grain=year; select 1')).grain === 'month')
-const hostStatus = (host) => new Promise((res) => { const u = new URL(BASE); const rq = http.request({ host: u.hostname, port: u.port, path: '/api/meta', headers: { Host: host } }, (r) => { r.resume(); res(r.statusCode) }); rq.on('error', () => res(0)); rq.end() })
+if ((process.env.EXPECT_MODE || 'csv') === 'csv') ok('agents endpoints say "setup needed" when there is no live WATI data (snapshot mode), not an error', (await get('agents/overview')).setup === true && (await get('agents/chats')).setup === true)
+const hostStatus = (host) => new Promise((res) => { const u = new URL(BASE); const rq = http.request({ host: u.hostname, port: u.port, path: '/api/meta', headers: { Host: host, Cookie: COOKIE } }, (r) => { r.resume(); res(r.statusCode) }); rq.on('error', () => res(0)); rq.end() })
 ok('a request addressed to another host name is refused (403), localhost works', (await hostStatus('evil.example')) === 403 && (await hostStatus('localhost')) === 200)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

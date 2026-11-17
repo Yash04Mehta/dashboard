@@ -8,14 +8,14 @@ import { FilterBar } from "@/components/filter-bar"
 import { axis, rowFormatter } from "@/components/charts"
 import { BarList, ChartCard, ChartSkeleton, Empty, ErrorNote, PageHeader, ScoreGrid, SortableTable, useAutoGrain, type Col, type Grain } from "@/components/kit"
 import { LiveBadge, LivePage } from "@/components/v1"
-import { Heat, Pill } from "@/pages/inbox"
+import { Heat, Pill } from "@/components/chat-bits"
 import { useSeen } from "@/components/lazy"
 import { useApi } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 import { useReveal } from "@/lib/reveal"
 import { day, duration, money, num, one, pct, periodLabel, ppDelta, relDelta } from "@/lib/format"
 
-/** Chats v1: the WATI Inbox Analytics overview (activity tiles, status over time, status donut, volume heat map, chat length, operator performance),
+/** Chats: the WATI Inbox Analytics overview (activity tiles, status over time, status donut, volume heat map, chat length, operator performance),
  *  with what every chat cost in template messages next to it, and the chat list underneath. Built from public.wati_messages (the new webhook). */
 export default function ChatsV1() {
   return <LivePage><Page /></LivePage>
@@ -45,7 +45,7 @@ const lineCfg: ChartConfig = Object.fromEntries(SERIES.map((s) => [s.key, { labe
 const lenCfg: ChartConfig = { chats: { label: "Chats", color: "var(--c1)" }, avg_min: { label: "Average length", color: "var(--c4)" } }
 const spendCfg: ChartConfig = { spend: { label: "Cost", color: "var(--c1)" }, chats: { label: "Chats", color: "var(--c4)" } }
 const flowCfg: ChartConfig = { sent: { label: "Sent by us", color: "var(--c1)" }, received: { label: "Received from customers", color: "var(--good)" } }
-// each message we sent counts once, at the furthest step it reached (the same rule as the message list on Messages v1)
+// each message we sent counts once, at the furthest step it reached (the same rule as the message list on Messages)
 const DELIVERY = [
   { key: "replied", label: "Replied", color: "var(--good)" },
   { key: "read", label: "Read", color: "var(--c1)" },
@@ -85,13 +85,13 @@ function Page() {
   const heat = useApi<any>(low ? "chats/heatmap" : null, params)
   const ops = useApi<any>(low ? "chats/operators" : null, params)
   const cost = useApi<any>("chats/cost", { ...params, grain })
-  const flow = useApi<any>(low ? "chats/flow" : null, { from: params.from, to: params.to, grain })
-  const mtypes = useApi<any>(low ? "chats/message-types" : null, { from: params.from, to: params.to })
-  const deliv = useApi<any>(low ? "chats/delivery" : null, { from: params.from, to: params.to })
-  const wst = useApi<any>("chats/wati-status", { from: params.from, to: params.to })
-  const wop = useApi<any>("chats/wati-operators", { from: params.from, to: params.to })
-  const wtg = useApi<any>("chats/wati-tags", { from: params.from, to: params.to })
-  const people = useApi<any>("chats/operators", { from: params.from, to: params.to })   // everyone who owns chats, for the Team member filter (not narrowed by the filter itself)
+  const flow = useApi<any>(low ? "chats/flow" : null, { from: params.from, to: params.to, owners: params.owners, grain })
+  const mtypes = useApi<any>(low ? "chats/message-types" : null, { from: params.from, to: params.to, owners: params.owners })
+  const deliv = useApi<any>(low ? "chats/delivery" : null, { from: params.from, to: params.to, owners: params.owners })
+  const wst = useApi<any>("chats/wati-status", { from: params.from, to: params.to, owners: params.owners })
+  const wop = useApi<any>("chats/wati-operators", { from: params.from, to: params.to, owners: params.owners })
+  const wtg = useApi<any>("chats/wati-tags", { from: params.from, to: params.to, owners: params.owners })
+  const people = useApi<any>("chats/operators", { from: params.from, to: params.to })   // everyone who owns chats, for the Agent filter (not narrowed by the filter itself)
   const ownerNames: string[] = (people.data?.rows ?? []).map((r: any) => r.operator).filter((x: string) => x && x !== "Name unknown")
   const list = useApi<any>(low ? "chats/list" : null, { ...params, status: listStatus === "all" ? undefined : listStatus, reveal: reveal ? 1 : undefined })
 
@@ -104,7 +104,7 @@ function Page() {
   const trendRows = (trend.data?.rows ?? []).map((r: any) => ({ ...r, label: periodLabel(r.period, grain) }))
 
   const opCols: Col<any>[] = [
-    { key: "operator", header: "Team member", value: (r) => r.operator, render: (r) => <span className={r.operator === "Name unknown" ? "text-muted-foreground" : "font-medium"}>{r.operator}</span> },
+    { key: "operator", header: "Agent", value: (r) => r.operator, render: (r) => <span className={r.operator === "Name unknown" ? "text-muted-foreground" : "font-medium"}>{r.operator}</span> },
     { key: "chats", header: "Chats", align: "right", value: (r) => r.chats, render: (r) => num(r.chats) },
     { key: "team", header: "Replies sent", align: "right", value: (r) => r.team_msgs, render: (r) => num(r.team_msgs), hint: "Messages this person typed to customers. These are free." },
     { key: "fr", header: "Reply time", align: "right", value: (r) => r.fr_median, render: (r) => <span className="whitespace-nowrap">{duration(r.fr_median)}</span>, hint: "How long this person usually takes to reply to a customer's first message." },
@@ -120,13 +120,13 @@ function Page() {
     { key: "per", header: "Cost per chat", align: "right", value: (r) => r.cost_per_chat, render: (r) => money(r.cost_per_chat, cur) },
   ]
   const tplCols: Col<any>[] = [
-    { key: "t", header: "Message", value: (r) => r.template, render: (r) => <span className="block max-w-[14rem] truncate font-medium" title={r.template}>{r.template}</span> },
+    { key: "t", header: "Message", value: (r) => r.template, render: (r) => <span className="mx-auto block max-w-[14rem] truncate font-medium" title={r.template}>{r.template}</span> },
     { key: "cat", header: "Price type", value: (r) => r.category, render: (r) => <span title={r.assumed ? "This message is not on your price-type list, so the type was guessed" : undefined}>{r.category.toLowerCase()}{r.assumed ? " (guessed)" : ""}</span>, hint: "WhatsApp charges more for marketing messages than for utility ones." },
     { key: "u", header: "Sent", align: "right", value: (r) => r.units, render: (r) => num(r.units) },
     { key: "s", header: "Cost", align: "right", value: (r) => r.spend, render: (r) => <span className="font-medium">{money(r.spend, cur)}</span> },
   ]
   const listCols: Col<any>[] = [
-    { key: "customer", header: "Customer", value: (r) => r.customer, render: (r) => <span className="block max-w-[9rem] truncate font-medium" title={r.customer}>{r.customer}</span> },
+    { key: "customer", header: "Customer", value: (r) => r.customer, render: (r) => <span className="mx-auto block max-w-[9rem] truncate font-medium" title={r.customer}>{r.customer}</span> },
     { key: "phone", header: "Phone", value: (r) => r.phone, render: (r) => <span className="whitespace-nowrap">{r.phone}</span> },
     { key: "status", header: "Status", value: (r) => STATUS[r.status as StatusKey]?.label, render: (r) => <StatusChip s={r.status} /> },
     { key: "owner", header: "Owner", value: (r) => r.owner ?? "", render: (r) => r.owner ?? <span className={r.unassigned ? "text-warn" : "text-muted-foreground"}>{r.unassigned ? "Unknown" : "—"}</span> },
@@ -141,7 +141,7 @@ function Page() {
   // data is not there yet: say what to do instead of showing a page of zeros
   if (setup) return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Chats v1" description="Every WhatsApp chat and what it cost." />
+      <PageHeader title="Chats" description="Every WhatsApp chat and what it cost." />
       <ChartCard title="One setup step is missing" description="The database is not ready for this page yet.">
         <div className="flex flex-col gap-2 text-sm">
           <p>Ask whoever looks after the database to run <code>server/sql/chats.sql</code> once (it is safe to run again). This page then fills in on its own.</p>
@@ -153,8 +153,8 @@ function Page() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Chats v1" description="Every WhatsApp chat: who wrote, who replied, how fast, and what it cost." actions={<LiveBadge updatedAt={kpis.updatedAt} />} />
-      <FilterBar kinds={["owners"]} ownerOptions={ownerNames} ownerLabel="Team member" reveal />
+      <PageHeader title="Chats" description="Every WhatsApp chat: who wrote, who replied, how fast, and what it cost." actions={<LiveBadge updatedAt={kpis.updatedAt} />} />
+      <FilterBar kinds={["owners"]} ownerOptions={ownerNames} ownerLabel="Agent" reveal />
       <ErrorNote message={kpis.error} />
       {empty && <ChartCard title="No chats yet" description="Nothing has been saved so far."><p className="text-sm text-muted-foreground">Chats appear here as soon as the n8n workflow “Fetch Wati Data and send to Report” saves messages.</p></ChartCard>}
       {cov && !empty && <p className="-mt-3 text-sm text-muted-foreground">Showing chats from {day(cov.from_day)} to {day(cov.to_day)}. Earlier days are not tracked yet, so they appear empty. Labels like “Needs our reply” are worked out by this dashboard from the messages we have. They are not WATI's own labels.</p>}
@@ -169,14 +169,14 @@ function Page() {
             { icon: Bot, label: "Solved by bot", value: num(wst.data.period.solved_by_bot), tone: "good", foot: "solved while assigned to a bot", hint: "Solved while the chat was assigned to a bot." },
             { icon: Clock, label: "Expired", value: num(wst.data.period.expired), tone: "warn", foot: "expired in these dates", hint: "More than 24 hours since the customer's last message and not marked solved. A chat counts on the day it expired (24 hours after the customer last wrote), like WATI." },
             { icon: TriangleAlert, label: "Missed", value: num(wst.data.period.missed), tone: "bad", foot: "expired, never answered", hint: "Expired in these dates, assigned to someone, and nobody ever replied. Counted on the day it expired, like WATI." },
-            { icon: UserX, label: "Unassigned", value: num(wst.data.period.unassigned), tone: "warn", foot: "nobody is assigned", hint: "No team member or bot is assigned to the chat." },
+            { icon: UserX, label: "Unassigned", value: num(wst.data.period.unassigned), tone: "warn", foot: "nobody is assigned", hint: "No agent or bot is assigned to the chat." },
             { icon: MessagesSquare, label: "Conversations", value: num(wst.data.period.total), foot: "customer wrote in these dates", hint: "Conversations where the customer wrote in the selected dates. Chats that only got a message from us are not included here: see Awaiting customer below." },
           ]} />
           <div className="grid gap-4 lg:grid-cols-5">
-            <ChartCard className="lg:col-span-3" title="Team (from WATI)" description="Conversations assigned to each team member or bot, by their status in WATI. Open and Pending are right now. Expired and Missed are counted on the day the chat expired, like WATI. Assigned and Solved follow the day the customer last wrote.">
+            <ChartCard className="lg:col-span-3" title="Team (from WATI)" description="Conversations assigned to each agent or bot, by their status in WATI. Open and Pending are right now. Expired and Missed are counted on the day the chat expired, like WATI. Assigned and Solved follow the day the customer last wrote.">
               {wop.error ? <ErrorNote message={wop.error} /> : !wop.data ? <ChartSkeleton h={200} /> : wop.data.rows.length === 0 ? <Empty>No assigned conversations in these dates.</Empty> : (
                 <SortableTable rows={wop.data.rows} cols={[
-                  { key: "operator", header: "Team member", value: (r: any) => r.operator, render: (r: any) => <span className="font-medium">{r.operator}{r.is_bot && <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">bot</span>}</span> },
+                  { key: "operator", header: "Agent", value: (r: any) => r.operator, render: (r: any) => <span className="font-medium">{r.operator}{r.is_bot && <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">bot</span>}</span> },
                   { key: "assigned", header: "Assigned", align: "right", value: (r: any) => r.assigned, render: (r: any) => num(r.assigned) },
                   { key: "open", header: "Open", align: "right", value: (r: any) => r.open, render: (r: any) => num(r.open), hint: "Open right now, whatever dates are picked." },
                   { key: "pending", header: "Pending", align: "right", value: (r: any) => r.pending, render: (r: any) => num(r.pending), hint: "Pending right now, whatever dates are picked." },
@@ -296,7 +296,7 @@ function Page() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <ChartCard className="lg:col-span-3" title="Messages we sent and received" description="Messages we sent (ready-made messages and our team's replies) against messages customers sent us. This follows the dates only, not the Team member filter.">
+        <ChartCard className="lg:col-span-3" title="Messages we sent and received" description="Messages we sent (ready-made messages and our team's replies) against messages customers sent us. This follows the dates and the Agent filter (only chats owned by the chosen agents).">
           {flow.error ? <ErrorNote message={flow.error} /> : !flow.data ? <ChartSkeleton h={260} /> : flow.data.rows.length === 0 ? <Empty>No messages in these dates.</Empty> : (
             <ChartContainer config={flowCfg} className="h-[260px] w-full">
               <ComposedChart data={flow.data.rows.map((r: any) => ({ ...r, label: periodLabel(r.period, grain) }))} margin={{ left: 4, right: 8, top: 8 }}>
@@ -343,7 +343,7 @@ function Page() {
         </ChartCard>
       </div>
 
-      <ChartCard title="Kinds of messages" description="Text, images and other kinds of messages: what we sent and what customers sent us. This follows the dates only, not the Team member filter.">
+      <ChartCard title="Kinds of messages" description="Text, images and other kinds of messages: what we sent and what customers sent us. This follows the dates and the Agent filter (only chats owned by the chosen agents).">
         {mtypes.error ? <ErrorNote message={mtypes.error} /> : !mtypes.data ? <ChartSkeleton h={160} /> : mtypes.data.needsViewUpdate ? <ViewUpdateNote /> : mtypes.data.rows.length === 0 ? <Empty>No messages in these dates.</Empty> : (
           <SortableTable rows={mtypes.data.rows.map((r: any) => ({ ...r, label: typeLabel(r.type) }))} cols={[
             { key: "label", header: "Kind", value: (r: any) => r.label, render: (r: any) => <span className="font-medium">{r.label}</span> },
@@ -353,7 +353,7 @@ function Page() {
         )}
       </ChartCard>
 
-      <ChartCard title="Team performance" description="One row per team member who handles chats: how many, how fast they reply, and how many were missed.">
+      <ChartCard title="Team performance" description="One row per agent who handles chats: how many, how fast they reply, and how many were missed.">
         {ops.error ? <ErrorNote message={ops.error} /> : !ops.data ? <ChartSkeleton h={200} /> : ops.data.rows.length === 0 ? <Empty>No chats with a known owner in these dates.</Empty> : (
           <SortableTable rows={ops.data.rows} cols={opCols} rowKey={(r) => r.operator} initialSort="chats" maxHeight="22rem" exportName="team-performance" />
         )}

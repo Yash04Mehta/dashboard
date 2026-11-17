@@ -29,33 +29,81 @@ function judge(r: any, all: { delivered: number; read: number; replied: number }
   return null
 }
 
+// Plain-English names for WhatsApp's failure codes. An unknown code falls back to the text WATI saved.
+const REASON_NAME: Record<string, string> = {
+  "131049": "Meta limited marketing messages",
+  "131026": "Number can't receive it",
+  "100": "Template media or info missing",
+  "130472": "Part of a Meta experiment",
+  "131000": "Something went wrong (Meta)",
+  "2": "WhatsApp temporarily unavailable",
+}
+function reasonName(reason: string) {
+  const code = reason.split(" · ")[0].trim()
+  return REASON_NAME[code] ? { name: REASON_NAME[code], code } : { name: reason.slice(0, 60), code: "" }
+}
+
 export function TemplateTable({ params }: { params: Params }) {
   const { set } = useFilters()
   const tpl = useApi<any>("messages/templates", params)
+  const fr = useApi<any>("messages/fail-reasons", params)
+  const byTpl = useMemo(() => new Map<string, any>((fr.data?.by_template ?? []).map((t: any) => [t.template_name, t])), [fr.data])
 
   const view = useMemo(() => {
     const rows: any[] = tpl.data?.rows ?? []
     const sum = (k: string) => rows.reduce((s, r) => s + r[k], 0)
     const m = sum("measured")
     const all = { delivered: m ? (100 * sum("delivered")) / m : 0, read: m ? (100 * sum("read")) / m : 0, replied: m ? (100 * sum("replied")) / m : 0 }
-    const points = rows.map((r) => ({ ...r, small: r.measured < MIN_TEMPLATE, flag: judge(r, all) }))
+    // Delivered counts the read ones too, so the four groups below are separate and add up to Messages:
+    // failed + sent only (no delivery news yet) + delivered but not read + read (replied is part of read).
+    const part = (n: number, m: number) => (m ? Math.round((1000 * n) / m) / 10 : null)
+    const points = rows.map((r) => {
+      const not_read = Math.max(0, r.delivered - r.read)
+      const sent_only = Math.max(0, r.measured - r.delivered - r.failed)
+      return { ...r, not_read, sent_only, not_read_pct: part(not_read, r.measured), sent_only_pct: part(sent_only, r.measured), small: r.measured < MIN_TEMPLATE, flag: judge(r, all) }
+    })
     return { all, points, small: points.filter((r) => r.small).length }
   }, [tpl.data])
 
   const cols: Col<any>[] = [
     { key: "template_name", header: "Template", value: (r) => r.template_name, className: "max-w-[10rem] whitespace-normal break-all" },
     { key: "measured", header: "Messages", align: "right", value: (r) => r.measured, render: (r) => num(r.measured) },
-    { key: "read_pct", header: "Read", align: "right", value: (r) => r.read_pct, render: (r) => pct(r.read_pct) },
-    { key: "replied_pct", header: "Replied", align: "right", value: (r) => r.replied_pct, render: (r) => pct(r.replied_pct) },
-    { key: "flag", header: "Why", value: (r) => r.flag?.label ?? (r.small ? "Too few messages" : ""), className: "whitespace-nowrap",
-      render: (r) => r.flag ? <span className="font-medium" style={{ color: TONE[r.flag.tone as Tone] }}>{r.flag.label}</span> : r.small ? <span className="text-muted-foreground">Too few messages</span> : <span className="text-muted-foreground">—</span> },
+    { key: "sent_only_pct", header: "Sent only", align: "right", value: (r) => r.sent_only_pct, render: (r) => <>{num(r.sent_only)} <span className="text-muted-foreground">· {pct(r.sent_only_pct)}</span></>,
+      hint: "Sent, but WhatsApp has not reported it delivered yet (or never did). Not failed." },
+    { key: "not_read_pct", header: "Delivered, not read", align: "right", value: (r) => r.not_read_pct, render: (r) => <>{num(r.not_read)} <span className="text-muted-foreground">· {pct(r.not_read_pct)}</span></>,
+      hint: "Reached the customer's phone, not opened yet." },
+    { key: "read_pct", header: "Read", align: "right", value: (r) => r.read_pct, render: (r) => <>{num(r.read)} <span className="text-muted-foreground">· {pct(r.read_pct)}</span></>,
+      hint: "Opened by the customer. This includes the ones who replied." },
+    { key: "replied_pct", header: "of which replied", align: "right", value: (r) => r.replied_pct, render: (r) => <>{num(r.replied)} <span className="text-muted-foreground">· {pct(r.replied_pct)}</span></>,
+      hint: "Part of Read, not in addition to it. A customer who replied has also read the message." },
+    { key: "failed_pct", header: "Failed", align: "right", value: (r) => r.failed_pct, render: (r) => <span style={r.failed_pct > LIMIT_FAILED ? { color: TONE.bad } : undefined}>{num(r.failed)} <span className="text-muted-foreground">· {pct(r.failed_pct)}</span></span>,
+      hint: "Messages that failed, and their share of all messages of this template." },
+    { key: "flag", header: "Why", value: (r) => r.flag?.label ?? (r.small ? "Too few messages" : ""), className: "min-w-[17rem] whitespace-normal",
+      render: (r) => {
+        const t = byTpl.get(r.template_name)
+        const note = r.flag ? <span className="font-medium" style={{ color: TONE[r.flag.tone as Tone] }}>{r.flag.label}</span> : r.small ? <span className="text-muted-foreground">Too few messages</span> : <span className="text-muted-foreground">—</span>
+        return (
+          <div className="flex flex-col gap-0.5">
+            {note}
+            {t?.reasons?.length > 0 && (
+              <ul className="text-xs text-muted-foreground">
+                {t.reasons.slice(0, 3).map((x: any) => { const { name, code } = reasonName(x.reason); return (
+                  <li key={x.reason} title={x.reason}>{name}{code && ` (${code})`}: <span className="tnum text-foreground">{num(x.n)} · {pct(100 * x.n / t.failed)}</span></li>
+                ) })}
+              </ul>
+            )}
+          </div>
+        )
+      } },
   ]
 
   return (
     <ChartCard title="Templates" description={tpl.data ? `All ${view.points.length} templates. Average: ${pct(view.all.read)} read, ${pct(view.all.replied)} replied. Click a row to filter the page to that template. Each person counts once per template.` : "Click a row to filter the page to that template."}>
       {tpl.error ? <ErrorNote message={tpl.error} /> : !tpl.data ? <ChartSkeleton h={420} /> : view.points.length === 0 ? <Empty>No templates were sent in this selection.</Empty> : (
         <div className="flex flex-col gap-2">
-          <SortableTable rows={view.points} cols={cols} rowKey={(r) => r.template_name} initialSort="measured" maxHeight="17rem" onRowClick={(r) => set({ templates: [r.template_name] })} searchText={(r) => r.template_name} searchPlaceholder="Search templates" />
+          <SortableTable rows={view.points} cols={cols} rowKey={(r) => r.template_name} initialSort="measured" maxHeight="26rem" onRowClick={(r) => set({ templates: [r.template_name] })} searchText={(r) => r.template_name} searchPlaceholder="Search templates" />
+          <p className="text-xs text-muted-foreground">Each row adds up: Messages = Sent only + Delivered, not read + Read + Failed. "Of which replied" is a part of Read, so it is not added again. Rarely, a person who got a message and then had a resend fail is counted in both groups, so that row can add up to a little over Messages.</p>
+          {fr.data?.capturing && <p className="text-xs text-muted-foreground">Failure reasons are listed under "Why" with their count and share of that template's failures that have a saved reason. WhatsApp's reason has been saved only since {fr.data.since}, so older failures have none and the counts can be lower than the Failed column.</p>}
           <ul className="mt-1 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
             <li><span className="font-medium" style={{ color: TONE.bad }}>Many failures</span>: over {LIMIT_FAILED}% failed.</li>
             <li><span className="font-medium" style={{ color: TONE.warn }}>Poor delivery</span>: a quarter below average.</li>

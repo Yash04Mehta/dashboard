@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet, useLocation } from "react-router-dom"
-import { Activity, IndianRupee, Inbox, LayoutDashboard, MessageSquare, MessagesSquare, Moon, Sun, Target, UserSearch, Users } from "lucide-react"
+import { Activity, Headset, LogOut, MessageSquare, MessagesSquare, Moon, Sun, UserSearch } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -8,24 +8,17 @@ import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupConte
 import { Skeleton } from "@/components/ui/skeleton"
 import { RefreshButton } from "@/components/refresh"
 import { ExportReportButton } from "@/components/export-report"
+import { useAuth } from "@/lib/auth"
 import { useFilters } from "@/lib/filters"
 import { day } from "@/lib/format"
 
+// the four live pages ("range" carries an explicit "All time" from page to page; without it every page opens on yesterday)
 const NAV = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, keep: ["from", "to", "templates", "sources", "owners"], title: "Overview" },
-  { to: "/messages", label: "Messages", icon: MessageSquare, keep: ["from", "to", "templates", "sources", "owners"], title: "Messages" },
-  { to: "/costs", label: "Costs", icon: IndianRupee, keep: ["from", "to", "templates", "sources", "owners"], title: "Costs" },
-  { to: "/inbox", label: "Inbox", icon: Inbox, keep: ["from", "to"], title: "Inbox" },
-  { to: "/leads", label: "Leads", icon: Users, keep: ["from", "to", "owners"], title: "Leads" },
-  { to: "/opportunities", label: "Opportunities", icon: Target, keep: ["from", "to", "owners"], title: "Opportunities" },
+  { to: "/", label: "Overview", icon: Activity, keep: ["from", "to", "range", "templates", "sources", "owners"], title: "Overview" },
+  { to: "/messages", label: "Messages", icon: MessageSquare, keep: ["from", "to", "range", "templates", "sources", "owners"], title: "Messages" },
+  { to: "/chats", label: "Chats", icon: MessagesSquare, keep: ["from", "to", "range"], title: "Chats" },
+  { to: "/agents", label: "Agents", icon: Headset, keep: ["from", "to", "range"], title: "Agents" },
   { to: "/customers", label: "Customer lookup", icon: UserSearch, keep: [], title: "Customer lookup" },
-]
-// the two pages laid out from "Overview Page.md", built to run on the live database
-const NAV_V1 = [
-  { to: "/ov_v1", label: "Overview v1", icon: Activity, keep: ["from", "to", "templates", "sources", "owners"], title: "Overview v1" },
-  { to: "/mes_v1", label: "Messages v1", icon: MessageSquare, keep: ["from", "to", "templates", "sources", "owners"], title: "Messages v1" },
-  { to: "/chats_v1", label: "Chats v1", icon: MessagesSquare, keep: ["from", "to"], title: "Chats v1" },
-  { to: "/cust_v1", label: "Customer lookup v1", icon: UserSearch, keep: [], title: "Customer lookup v1" },
 ]
 
 function ThemeToggle() {
@@ -50,10 +43,11 @@ function ThemeToggle() {
 
 export function AppLayout() {
   const { meta, metaError } = useFilters()
+  const { logout, hasLogin } = useAuth()
   const loc = useLocation()
   const params = new URLSearchParams(loc.search)
   useEffect(() => { window.scrollTo(0, 0) }, [loc.pathname])   // a new page starts at its top, not where the last one was scrolled to
-  const current = [...NAV, ...NAV_V1].find((n) => (n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to))) ?? NAV[0]
+  const current = NAV.find((n) => (n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to))) ?? NAV[0]
   const linkSearch = (keep: string[]) => { const p = new URLSearchParams(); for (const k of keep) if (params.get(k)) p.set(k, params.get(k)!); const s = p.toString(); return s ? "?" + s : "" }
 
   return (
@@ -84,21 +78,6 @@ export function AppLayout() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup>
-            <SidebarGroupLabel>Live reports (v1)</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {NAV_V1.map((n) => (
-                  <SidebarMenuItem key={n.to}>
-                    <SidebarMenuButton isActive={n === current} render={<NavLink to={{ pathname: n.to, search: linkSearch(n.keep) }} />}>
-                      <n.icon />
-                      <span>{n.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </SidebarContent>
         <SidebarFooter className="gap-1 px-4 py-3 text-xs text-muted-foreground">
           {meta ? (
@@ -116,7 +95,7 @@ export function AppLayout() {
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-5" />
           <span className="text-sm font-medium">{current.title}</span>
-          <div className="ml-auto flex items-center gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle /></div>
+          <div className="ml-auto flex items-center gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle />{hasLogin && <Button variant="ghost" size="sm" onClick={logout}><LogOut className="size-4" />Log out</Button>}</div>
         </header>
         <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-6 p-4 md:p-6">
           {metaError ? (

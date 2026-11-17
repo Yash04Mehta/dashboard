@@ -2,7 +2,9 @@
 // what it means and what to do about it. The codes are Meta's WhatsApp Cloud API error codes; when there is no code we match on the wording.
 // Nothing here changes data: it only changes how the reasons are shown.
 
-export type FailGroupId = "customer" | "window" | "meta" | "template" | "account" | "other"
+import { phoneBecause, phoneIssue } from "./validate"
+
+export type FailGroupId = "number" | "customer" | "window" | "meta" | "template" | "account" | "other"
 
 export type FailGroup = {
   id: FailGroupId
@@ -14,6 +16,9 @@ export type FailGroup = {
 }
 
 export const GROUPS: Record<FailGroupId, FailGroup> = {
+  number: { id: "number", title: "Phone number problem", who: "Our data", color: "var(--warn)",
+    means: "The number saved on the lead is not a valid WhatsApp number (wrong number of digits, an extra 0, 91 twice, or text in the field), so WhatsApp could not deliver to it. Found by the dashboard's own check, not reported by WhatsApp.",
+    todo: "Correct the number on the lead in Salesforce, then send again." },
   customer: { id: "customer", title: "Customer can't receive it", who: "Customer's side", color: "var(--c4)",
     means: "The number isn't on WhatsApp, the customer has blocked business messages or opted out, or their phone can't show this kind of message.",
     todo: "Nothing to fix in the template. Check the phone number on the lead, and call or text these customers instead." },
@@ -34,7 +39,7 @@ export const GROUPS: Record<FailGroupId, FailGroup> = {
     todo: "Send the wording to whoever maintains the dashboard so it can be added." },
 }
 
-export const ORDER: FailGroupId[] = ["customer", "window", "meta", "template", "account", "other"]
+export const ORDER: FailGroupId[] = ["number", "customer", "window", "meta", "template", "account", "other"]
 
 // Meta WhatsApp Cloud API error codes -> group and a short plain label
 const CODES: Record<string, [FailGroupId, string]> = {
@@ -78,7 +83,7 @@ const WORDS: [RegExp, FailGroupId][] = [
   [/rate.?limit|too many|throttl|limit|payment|billing|locked|restricted|balance|credit/i, "account"],
 ]
 
-export type Classified = { group: FailGroup; code: string | null; label: string; raw: string }
+export type Classified = { group: FailGroup; code: string | null; label: string; raw: string; via?: string; fix?: string; because?: string }
 
 /** The server joins code and text as "131026 · Message undeliverable". Split them, then name the group. */
 export function classify(reason: string | null | undefined): Classified {
@@ -97,7 +102,7 @@ export type BucketId = "ours" | "whatsapp" | "customer" | "unclear"
 export type Bucket = { id: BucketId; title: string; tagline: string; color: string; means: string; todo: string; groups: FailGroupId[] }
 
 export const BUCKETS: Record<BucketId, Bucket> = {
-  ours: { id: "ours", title: "We can fix these", tagline: "A problem on our side", color: "var(--warn)", groups: ["template", "window", "account"],
+  ours: { id: "ours", title: "We can fix these", tagline: "A problem on our side", color: "var(--warn)", groups: ["number", "template", "window", "account"],
     means: "The message was fine to send, but our template, our timing or our account stopped it.", todo: "Start here. These are the failures you can stop." },
   whatsapp: { id: "whatsapp", title: "WhatsApp held it back", tagline: "WhatsApp's decision", color: "var(--c5)", groups: ["meta"],
     means: "WhatsApp chose not to deliver it. Usually this customer already received many marketing messages, or our number's quality rating slipped.",
@@ -110,3 +115,13 @@ export const BUCKETS: Record<BucketId, Bucket> = {
 }
 export const BUCKET_ORDER: BucketId[] = ["ours", "whatsapp", "customer", "unclear"]
 export const bucketOf = (g: FailGroupId): BucketId => BUCKET_ORDER.find((b) => BUCKETS[b].groups.includes(g)) ?? "unclear"
+
+/** Like classify, but for one row of the message log: when the dashboard's own check finds the number malformed, that is named as the cause
+ *  (WhatsApp's own code is kept in `via`). A bad number is also why WhatsApp reports "Message undeliverable", so the two agree. */
+export function classifyMsg(r: { status: string; reason?: string | null; phone_issue?: string | null; phone_digits?: number | null }): Classified | null {
+  if (r.status !== "failed") return null
+  const meta = classify(r.reason)
+  const p = phoneIssue(r.phone_issue)
+  if (p) return { group: GROUPS.number, code: meta.code, label: p.label, raw: meta.raw, via: meta.label, fix: p.todo, because: phoneBecause(r.phone_issue, r.phone_digits) }
+  return meta
+}

@@ -7,12 +7,17 @@ Built with React, **shadcn/ui** (Tailwind), Recharts and a small local server. I
 Double-click **`start.bat`**. After about 15 seconds your browser opens at http://localhost:8787. Close the window, or run `stop.bat`, to stop it.
 (First time only it installs packages and builds the app. Needs Node 22 or newer.)
 
+## Log in
+The app asks for a demo login first: user name **admin**, password **pass@123**. Change them with `DEMO_USER` and `DEMO_PASS` in `.env` (do this before sharing a link). It is one shared demo account, not user management. The session lasts 8 hours or until the server restarts, and there is a **Log out** button in the top bar.
+
 ## Pages
+Five pages. Every page opens on **yesterday**; pick another range in the date filter (an explicit "All time" is kept as you move between pages).
 | Page | What it answers |
 |---|---|
-| **Messages** | How templates perform: delivered, read, replied, failed. Trend, drop-off funnel, per-template table, failure bursts, and rates by lead source or owner. Click a template row to filter the page to it. |
-| **Leads** | Where leads come from, status mix, welcome and follow-up coverage by month, owner table, and a searchable list of every lead. |
-| **Opportunities** | Open, won, lost, win rate, how long New opportunities have waited, owner table, and a searchable list. |
+| **Overview** | Chats, leads and WhatsApp messages in one place: counts with percentages, reply time, send-time chart, message funnel (grey = sent, green = delivered, blue = read) and a template table. |
+| **Messages** | How messages and templates perform: numbers, funnel, trend, why messages failed, and a list of every message sent ("WhatsApp message sent to Name (+91…)"). Pick a template to see its text, cost and price type. |
+| **Chats** | WATI-style chat reporting: activity, status over time, volume heat map, chat length, team performance and what each chat cost. |
+| **Agents** | The people who handle the chats: chats assigned, answered, missed, waiting, how long customers waited (typical, slowest 1 in 10, within 5 minutes and 1 hour), reply times by hour of day, bots kept separate, and the chats behind every number. Reply time comes from WATI's own record plus the team replies the workflow saved, and every figure shows how many chats it rests on. |
 | **Customer lookup** | Search one customer by phone digits (4 or more), name, lead id or opportunity id. Shows their leads, opportunities, every WhatsApp template sent and its outcome, customer messages, data-quality notes and a dated timeline. |
 
 **Export report** (top bar) makes a printable report for the dates and filters you picked: it opens in a new tab, where you can download it as a file or save it as a PDF. It holds totals only (no phone numbers or message text).
@@ -38,14 +43,14 @@ When a date range is chosen, each rate is compared with the same number of days 
    grant usage on schema reporting to dashboard_ro;
    grant select on all tables in schema reporting to dashboard_ro;
    alter default privileges in schema reporting grant select on tables to dashboard_ro;
-   -- the Inbox and Customer lookup pages read these two source tables directly (read-only)
+   -- the Chats and Customer lookup pages read these two source tables directly (read-only)
    grant usage on schema public to dashboard_ro;
    grant select on public.wati_message_log, public.wati_sessions to dashboard_ro;
    ```
    Re-run the `grant select` line after re-running the SQL files, because the views are recreated.
 3. Copy `.env.example` to `.env`, set `DATABASE_URL`, and restart. Do not share the file. For Supabase, use the "Session pooler" address from Project, Connect (the plain address only works over IPv6).
 4. Run `node server/check_live.mjs`. It connects read-only and tells you in plain words what is missing (views, grants, an old feed). Fix anything marked FIX, then start the dashboard with `start.bat`.
-5. Open **Overview v1** or **Messages v1** in the sidebar. The badge at the top right says "Live" with the time of the last refresh, and the numbers refresh by themselves every minute. In snapshot mode the same badge says "Snapshot" and nothing refreshes.
+5. Open **Overview** or **Messages** in the sidebar. The badge at the top right says "Live" with the time of the last refresh, and the numbers refresh by themselves every minute. In snapshot mode the same badge says "Snapshot" and nothing refreshes.
 
 Real time depends on the feed, not on the dashboard: WATI sends each event to n8n, n8n saves it to the database, and the dashboard reads it within a minute. If the newest message in the log is old, the problem is the WATI webhook or the n8n workflow, and `check_live.mjs` says so.
 
