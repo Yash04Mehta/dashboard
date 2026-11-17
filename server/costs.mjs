@@ -15,12 +15,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+const CONFIG_DIR = process.env.AQ_CONFIG_DIR || path.resolve(here, '..', 'config')   // once bundled for Netlify, "here" is not server/, so the function says where config/ is
 export const FILES = {
-  rates: path.resolve(here, '..', 'config', 'rate_card.csv'),
-  cats: path.resolve(here, '..', 'config', 'template_categories.csv'),
+  rates: path.join(CONFIG_DIR, 'rate_card.csv'),   // CONFIG_DIR: see above (the Netlify Function sets AQ_CONFIG_DIR)
+  cats: path.join(CONFIG_DIR, 'template_categories.csv'),
   status: path.resolve(here, '..', '..', 'data_insight', 'wati_template_status.csv'),
   messagesFresh: path.resolve(here, '..', '..', 'data_insight', 'wati_templates.json'),
-  messages: path.resolve(here, '..', 'config', 'template_messages.json'),
+  messages: path.join(CONFIG_DIR, 'template_messages.json'),
 }
 export const CATEGORIES = ['MARKETING', 'UTILITY', 'AUTHENTICATION', 'SERVICE']
 

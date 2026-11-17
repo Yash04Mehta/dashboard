@@ -15,6 +15,10 @@ try { process.loadEnvFile(path.resolve(here, '..', '.env')) } catch { /* no .env
 const dist = path.resolve(here, '..', 'dist')
 const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '127.0.0.1'
+// Netlify Function mode (set by netlify/functions/api.mjs): no port, no static files (Netlify serves dist/), no warm-up timers, and the app is exported instead of listening.
+const SERVERLESS = process.env.AQ_SERVERLESS === '1'
+// the caller's address, for the "10 wrong tries" lock. On Netlify only the header Netlify itself sets can be trusted (the others can be typed by anyone).
+const clientIp = (req) => String((SERVERLESS ? req.headers['x-nf-client-connection-ip'] : req.headers['cf-connecting-ip']) || req.socket.remoteAddress || '')
 
 console.log('Aquant Insight: loading data ...')
 const t0 = Date.now()
@@ -30,7 +34,7 @@ app.disable('x-powered-by')
 app.use((req, res, next) => {
   const host = String(req.headers.host || '').split(':')[0]
   const viaTunnel = process.env.TUNNEL === '1' && host.endsWith('.trycloudflare.com') // opt-in: share.bat only
-  if (HOST === '127.0.0.1' && !viaTunnel && !['127.0.0.1', 'localhost'].includes(host)) return res.status(403).json({ error: 'Forbidden host' })
+  if (!SERVERLESS && HOST === '127.0.0.1' && !viaTunnel && !['127.0.0.1', 'localhost'].includes(host)) return res.status(403).json({ error: 'Forbidden host' })
   next()
 })
 
@@ -41,7 +45,7 @@ if (DASH_PASSWORD) {
   const want = sha(DASH_PASSWORD)
   const fails = new Map()   // ip -> { n, until }: 10 wrong tries locks that address for 10 minutes
   app.use((req, res, next) => {
-    const ip = String(req.headers['cf-connecting-ip'] || req.socket.remoteAddress || '')
+    const ip = clientIp(req)
     const f = fails.get(ip)
     if (f && f.n >= 10 && Date.now() < f.until) return res.status(429).type('text').send('Too many wrong passwords. Try again in 10 minutes.')
     const m = /^Basic (.+)$/i.exec(String(req.headers.authorization || ''))
@@ -92,7 +96,7 @@ const setCookie = (req, res, v, maxAge) => res.setHeader('Set-Cookie', `aq_sessi
 app.get('/api/session', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ authenticated: loggedIn(req) }) })
 app.post('/api/login', express.json({ limit: '2kb' }), (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
-  const ip = String(req.headers['cf-connecting-ip'] || req.socket.remoteAddress || '')
+  const ip = clientIp(req)
   const f = loginFails.get(ip)
   if (f && f.n >= 10 && Date.now() < f.until) return res.status(429).json({ error: 'Too many wrong tries. Please wait 10 minutes.' })
   const { username, password, remember } = req.body || {}
@@ -170,7 +174,9 @@ app.use('/api', async (req, res) => {
   }
 })
 
-if (fs.existsSync(path.join(dist, 'index.html'))) {
+if (SERVERLESS) {
+  // Netlify serves the built web app itself (see netlify.toml); this function answers /api only
+} else if (fs.existsSync(path.join(dist, 'index.html'))) {
   app.use(express.static(dist))
   app.use((req, res) => res.sendFile(path.join(dist, 'index.html')))
 } else {
@@ -202,11 +208,14 @@ async function warm() {
   await Promise.all([worker(), worker(), worker(), worker()])
 }
 
-app.listen(PORT, HOST, () => {
-  console.log(`Open http://localhost:${PORT}  (Ctrl+C to stop)`)
-  if (ctx.mode === 'live') {
-    const t = Date.now()
-    warm().then(() => console.log(`First screens ready in ${((Date.now() - t) / 1000).toFixed(1)}s`))
-    setInterval(() => { if (Date.now() - lastUse < 30 * 60_000) warm() }, 4 * 60_000).unref()
-  }
-})
+if (!SERVERLESS) {
+  app.listen(PORT, HOST, () => {
+    console.log(`Open http://localhost:${PORT}  (Ctrl+C to stop)`)
+    if (ctx.mode === 'live') {
+      const t = Date.now()
+      warm().then(() => console.log(`First screens ready in ${((Date.now() - t) / 1000).toFixed(1)}s`))
+      setInterval(() => { if (Date.now() - lastUse < 30 * 60_000) warm() }, 4 * 60_000).unref()
+    }
+  })
+}
+export { app }

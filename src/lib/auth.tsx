@@ -14,6 +14,7 @@ export const UNAUTH_EVENT = "aq-unauth"
 export function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<"checking" | "in" | "out">("checking")
   const [hasLogin, setHasLogin] = useState(true)
+  const [notice, setNotice] = useState<string>()   // a hosted copy that is not set up yet says what is missing (503), instead of only failing at the first login
 
   useEffect(() => {
     const ac = new AbortController()
@@ -21,6 +22,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       .then(async (r) => {
         if (r.status === 404) { setHasLogin(false); setState("in"); return }   // an older server with no login: nothing to ask for
         const j = await r.json().catch(() => null)
+        if (r.status === 503 && j?.error) setNotice(j.error)
         setState(j?.authenticated ? "in" : "out")
       })
       .catch((e) => { if (e?.name !== "AbortError") setState("out") })
@@ -36,16 +38,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const logout = useCallback(() => { fetch("/api/logout", { method: "POST" }).finally(() => setState("out")) }, [])
 
   if (state === "checking") return <div className="p-8 text-sm text-muted-foreground">Loading…</div>
-  if (state === "out") return <LoginPage onDone={() => setState("in")} />
+  if (state === "out") return <LoginPage onDone={() => setState("in")} notice={notice} />
   return <AuthCtx.Provider value={{ logout, hasLogin }}>{children}</AuthCtx.Provider>
 }
 
-function LoginPage({ onDone }: { onDone: () => void }) {
+function LoginPage({ onDone, notice }: { onDone: () => void; notice?: string }) {
   const [user, setUser] = useState("")
   const [pass, setPass] = useState("")
   const [remember, setRemember] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string>()
+  const [error, setError] = useState<string | undefined>(notice)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()

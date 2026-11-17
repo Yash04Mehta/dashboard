@@ -7,6 +7,18 @@ Built with React, **shadcn/ui** (Tailwind), Recharts and a small local server. I
 Double-click **`start.bat`**. After about 15 seconds your browser opens at http://localhost:8787. Close the window, or run `stop.bat`, to stop it.
 (First time only it installs packages and builds the app. Needs Node 22 or newer.)
 
+## Hosting on Netlify
+The dashboard can also run as a website on Netlify: Netlify serves the built web app and runs the API as a Netlify Function (`netlify.toml`, `netlify/functions/api.mjs`). Connect the GitHub repo to a Netlify site (no build settings to type, they are in `netlify.toml`), then add these under **Site configuration > Environment variables** and deploy again:
+
+| Variable | What to put |
+|---|---|
+| `DATABASE_URL` | the read-only `dashboard_ro` connection (or `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`). The database must be reachable from the internet. Use the direct or session-mode address, not a transaction pooler |
+| `DEMO_USER`, `DEMO_PASS` | your own login for the site. The default password is public and is refused |
+| `SESSION_SECRET` | any random text of 32 or more characters |
+| `ALLOW_REVEAL` | leave unset (phone numbers and message text stay hidden). `true` allows the reveal switch |
+
+Until all four are set the site says what is missing on the login screen. Do not put the `.env` file in the repo; it is ignored on purpose. The website works only with the live database, never with the CSV files.
+
 ## Log in
 The app asks for a demo login first: user name **admin**, password **pass@123**. Change them with `DEMO_USER` and `DEMO_PASS` in `.env` (do this before sharing a link). It is one shared demo account, not user management. The session lasts 8 hours or until the server restarts, and there is a **Log out** button in the top bar.
 

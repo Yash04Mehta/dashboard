@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
+const SERVERLESS = process.env.AQ_SERVERLESS === '1'   // running as a Netlify Function (set by netlify/functions/api.mjs)
 const readSql = (f) => fs.readFileSync(path.join(here, 'sql', f), 'utf8')
 const CSV_TABLES = ['lead_insight', 'opportunity_insight', 'wati_message_log', 'wati_message_pivot', 'wati_sessions']
 
@@ -42,7 +43,8 @@ export async function connect() {
       ...liveConfig(),
       ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
       options: '-c default_transaction_read_only=on',
-      max: 8, idleTimeoutMillis: 30 * 60_000, connectionTimeoutMillis: 30_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000,
+      // Netlify Function: every warm copy of the function has its own pool, so keep it small (a page asks for many things at once, and many copies may run) and let idle ones go.
+      max: SERVERLESS ? 3 : 8, idleTimeoutMillis: SERVERLESS ? 10_000 : 30 * 60_000, connectionTimeoutMillis: 30_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000,
     })
     pool.on('error', (e) => console.error('[db] idle connection dropped:', e.message))
     const query = async (sql, args = []) => (await pool.query(sql, args)).rows
@@ -55,12 +57,17 @@ export async function connect() {
     const [{ d }] = await query('select current_date::text as d')
     const live = { mode: 'live', query, MSG: 'reporting.v_message_rows', asOf: d, cacheMs: 60_000 }
     // keep "today" right when the server runs for days, and keep a few connections open so the first page load does not pay for them
-    setInterval(async () => { try { live.asOf = (await query('select current_date::text as d'))[0].d } catch { /* keep the old date */ } }, 10 * 60_000).unref()
-    await Promise.all(Array.from({ length: 6 }, () => query('select 1').catch(() => {})))
+    if (!SERVERLESS) {   // (a function is frozen between requests: no timers, and a cold start must not pay for extra connections)
+      setInterval(async () => { try { live.asOf = (await query('select current_date::text as d'))[0].d } catch { /* keep the old date */ } }, 10 * 60_000).unref()
+      await Promise.all(Array.from({ length: 6 }, () => query('select 1').catch(() => {})))
+    }
     return live
   }
 
-  const { PGlite } = await import('@electric-sql/pglite')
+  // The CSV files hold real customer data and are never part of a hosted copy, so a Netlify Function needs a live database.
+  if (SERVERLESS) throw new Error('No database is set. Add DATABASE_URL (or PGHOST, PGUSER, PGPASSWORD, PGDATABASE) in Netlify > Site configuration > Environment variables.')
+  const PGLITE = '@electric-sql/pglite'   // named in a variable so the Netlify bundler does not pull this large library into the function
+  const { PGlite } = await import(PGLITE)
   const dir = path.resolve(process.env.DATA_DIR || path.join(root, '..', 'data_insight'))
   const missing = CSV_TABLES.filter((t) => !fs.existsSync(path.join(dir, t + '.csv')))
   if (missing.length) throw new Error(`CSV mode: missing ${missing.map((m) => m + '.csv').join(', ')} in ${dir}. Set DATA_DIR or DATABASE_URL.`)
