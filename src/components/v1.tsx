@@ -328,6 +328,7 @@ const BUCKET_ICON = { ours: Wrench, whatsapp: ShieldAlert, customer: UserX, uncl
 type FailModel = { buckets: Map<BucketId, { n: number; items: Map<string, any> }>; tpl: Map<BucketId, { name: string; n: number }[]>; total: number }
 
 export function FailureReasonsCard({ params }: { params: Params }) {
+  const phone = useIsMobile()
   const q = useApi<any>("messages/fail-reasons", params)
   const d = q.data
   const [pick, setPick] = useState<BucketId | null>(null)
@@ -359,7 +360,7 @@ export function FailureReasonsCard({ params }: { params: Params }) {
   const ours = model?.buckets.get("ours")?.n ?? 0
 
   return (
-    <ChartCard title="Why messages failed" description="The reason WhatsApp gave for each failed message, sorted by who can do something about it. Only failures saved since the reasons started being kept have a reason.">
+    <ChartCard bare={phone} title="Why messages failed" description="The reason WhatsApp gave for each failed message, sorted by who can do something about it. Only failures saved since the reasons started being kept have a reason.">
       {q.error ? <ErrorNote message={q.error} /> : !d ? <ChartSkeleton h={200} /> : !d.capturing ? (
         <div className="flex items-start gap-3 rounded-lg border border-dashed p-4 text-sm">
           <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -377,7 +378,7 @@ export function FailureReasonsCard({ params }: { params: Params }) {
         <div className="flex flex-col gap-5">
           {/* 1. the headline */}
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="tnum text-4xl font-semibold tracking-tight">{num(d.failed_events)}</span>
+            <span className="tnum text-3xl font-semibold tracking-tight sm:text-4xl">{num(d.failed_events)}</span>
             <span className="text-sm text-muted-foreground">
               messages failed since {day(d.since)}.
               {ours > 0 && <> <b className="text-foreground">{pct((100 * ours) / model.total, 0)}</b> of them are on our side and can be fixed.</>}
@@ -386,16 +387,16 @@ export function FailureReasonsCard({ params }: { params: Params }) {
           </div>
 
           {/* 2. who is responsible: pick one */}
-          <div className={cn("grid gap-3", shown.length > 3 ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-3")} role="group" aria-label="Cause of failure">
+          <div className={cn("grid grid-cols-2 gap-2.5 sm:gap-3", shown.length > 3 ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-3")} role="group" aria-label="Cause of failure">
             {shown.map((id) => {
               const B = FAIL_BUCKETS[id], n = model.buckets.get(id)?.n ?? 0, on = id === sel, Icon = BUCKET_ICON[id]
               return (
                 <button key={id} type="button" aria-pressed={on} onClick={() => setPick(id)} disabled={!n}
-                  className={cn("flex flex-col gap-2 rounded-xl border p-4 text-left transition-all enabled:hover:bg-muted/50 disabled:opacity-50", on && "bg-muted/60 shadow-sm")} style={on ? { borderColor: B.color, boxShadow: `inset 0 0 0 1px ${B.color}` } : undefined}>
-                  <span className="flex items-center gap-2 text-sm font-medium"><span className="flex size-7 items-center justify-center rounded-lg" style={{ background: `color-mix(in oklab, ${B.color} 18%, transparent)`, color: B.color }}><Icon className="size-4" /></span>{B.title}</span>
-                  <span className="flex items-baseline gap-2"><span className="tnum text-3xl font-semibold tracking-tight">{num(n)}</span><span className="tnum text-sm text-muted-foreground">{pct((100 * n) / model.total, 0)}</span></span>
+                  className={cn("flex flex-col gap-1.5 rounded-xl border p-3 text-left transition-all enabled:hover:bg-muted/50 disabled:opacity-50 sm:gap-2 sm:p-4", on && "bg-muted/60 shadow-sm")} style={on ? { borderColor: B.color, boxShadow: `inset 0 0 0 1px ${B.color}` } : undefined}>
+                  <span className="flex items-center gap-2 text-xs font-medium leading-tight sm:text-sm"><span className="flex size-7 shrink-0 items-center justify-center rounded-lg" style={{ background: `color-mix(in oklab, ${B.color} 18%, transparent)`, color: B.color }}><Icon className="size-4" /></span>{B.title}</span>
+                  <span className="flex items-baseline gap-2"><span className="tnum text-2xl font-semibold tracking-tight sm:text-3xl">{num(n)}</span><span className="tnum text-sm text-muted-foreground">{pct((100 * n) / model.total, 0)}</span></span>
                   <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full" style={{ width: `${(100 * n) / model.total}%`, background: B.color }} /></span>
-                  <span className="text-xs text-muted-foreground">{B.tagline}</span>
+                  <span className="hidden text-xs text-muted-foreground sm:block">{B.tagline}</span>
                 </button>
               )
             })}
@@ -712,7 +713,8 @@ function StatusSummary({ data, params }: { data: any; params: Params }) {
 }
 
 export function MessageLogCard({ params }: { params: Params }) {
-  const phone = useIsMobile()   // on a phone the six-column table is shown as one card per message
+  const phone = useIsMobile()   // on a phone the six-column table is shown as one card per message, 10 to a page
+  const PAGE = phone ? 10 : 25
   const { meta } = useFilters()
   const [status, setStatus] = useState<string>("all")
   const { reveal } = useReveal()
@@ -724,14 +726,14 @@ export function MessageLogCard({ params }: { params: Params }) {
   const [exportErr, setExportErr] = useState<string>()
   const pkey = JSON.stringify(params)
   useEffect(() => { const t = setTimeout(() => { setDq(q.trim()); setPage(1) }, 300); return () => clearTimeout(t) }, [q])
-  useEffect(() => { setPage(1); setOpen(null) }, [pkey, status, reveal])
+  useEffect(() => { setPage(1); setOpen(null) }, [pkey, status, reveal, phone])
   const ask = { ...params, status: status === "all" ? undefined : status, reveal: reveal ? 1 : undefined, search: reveal && dq ? dq : undefined }
-  const d = useApi<any>("messages/log", { ...ask, page, limit: 25 })
+  const d = useApi<any>("messages/log", { ...ask, page, limit: PAGE })
   const data = d.data
   const rs = useColResize(6, !!data?.rows?.length)
   const canReveal = !!meta?.canReveal && data?.canReveal !== false
-  const pages = Math.max(1, Math.ceil((data?.total ?? 0) / 25))
-  const first = data?.total ? (page - 1) * 25 + 1 : 0
+  const pages = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE))
+  const first = data?.total ? (page - 1) * PAGE + 1 : 0
 
   /** Downloads every message that matches the filters (up to 5000), with the failure reason. Numbers and message text only while they are shown. */
   const exportCsv = async () => {
@@ -755,8 +757,15 @@ export function MessageLogCard({ params }: { params: Params }) {
     } catch (e: any) { setExportErr(e.message) } finally { setExporting(false) }
   }
 
+  const searchBox = reveal && canReveal ? (
+    <div className="relative w-full max-w-xs sm:w-64">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by phone number" className="pl-8" aria-label="Search by phone number" />
+              </div>
+  ) : null
+
   return (
-    <ChartCard title="Every message we sent" description={data?.capturing ? `Every message we sent, newest first, with what happened to it and why it failed. ${canReveal ? "Use the “Show phone numbers and messages” switch at the top of the page to read the text. " : ""}Click a row to see the full story. Messages are saved from ${day(data.since)} on, so earlier ones are not listed. This list counts every message, so it can be higher than the numbers at the top, which count each person once per template.` : "Each message sent to a customer, with what happened to it and why it failed."}
+    <ChartCard bare={phone} title="Every message we sent" description={data?.capturing ? `Every message we sent, newest first, with what happened to it and why it failed. ${canReveal ? "Use the “Show phone numbers and messages” switch at the top of the page to read the text. " : ""}Click a row to see the full story. Messages are saved from ${day(data.since)} on, so earlier ones are not listed. This list counts every message, so it can be higher than the numbers at the top, which count each person once per template.` : "Each message sent to a customer, with what happened to it and why it failed."}
 >
       {d.error ? <ErrorNote message={d.error} /> : !data ? <ChartSkeleton h={260} /> : !data.capturing ? (
         <div className="flex items-start gap-3 rounded-lg border border-dashed p-4 text-sm">
@@ -769,7 +778,7 @@ export function MessageLogCard({ params }: { params: Params }) {
       ) : (
         <div className="flex flex-col gap-4">
           <div className="flex items-start gap-3">
-          <div className="flex flex-1 flex-wrap items-center justify-center gap-2" role="group" aria-label="Show messages that were">
+          <div className={cn("flex flex-1 items-center gap-2", phone ? "no-scrollbar min-w-0 flex-nowrap justify-start overflow-x-auto [&>button]:shrink-0" : "flex-wrap justify-center")} role="group" aria-label="Show messages that were">
             {LOG_STATUS.map((s) => {
               const n = data.counts[s.id], on = status === s.id
               return (
@@ -779,17 +788,15 @@ export function MessageLogCard({ params }: { params: Params }) {
                 </button>
               )
             })}
-            {reveal && canReveal && (
-              <div className="relative w-full max-w-xs sm:w-64">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by phone number" className="pl-8" aria-label="Search by phone number" />
-              </div>
-            )}
+            {!phone && searchBox}
           </div>
-          <Button variant="outline" size="sm" className="shrink-0" onClick={exportCsv} disabled={exporting || !data.total} title={reveal && canReveal ? "Downloads every matching message, with full numbers and the message text" : "Downloads every matching message. Numbers and text stay hidden unless you switch them on at the top of the page first."}><Download className="size-3.5" />{exporting ? "Preparing…" : "Export CSV"}</Button>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={exportCsv} disabled={exporting || !data.total} title={reveal && canReveal ? "Downloads every matching message, with full numbers and the message text" : "Downloads every matching message. Numbers and text stay hidden unless you switch them on at the top of the page first."}><Download className="size-3.5" /><span className={phone ? "sr-only" : undefined}>{exporting ? "Preparing…" : "Export CSV"}</span></Button>
           </div>
-          <p className="-mt-2 text-center text-xs text-muted-foreground">Each message is counted once, at the furthest step it reached. “Delivered” means delivered but not yet read. “Sent only” means WhatsApp took the message but no delivery news came back (still on its way, phone off, or not reported). Hover a button for more.</p>
-          <StatusSummary data={data} params={params} />
+          {!phone && <p className="-mt-2 text-center text-xs text-muted-foreground">Each message is counted once, at the furthest step it reached. “Delivered” means delivered but not yet read. “Sent only” means WhatsApp took the message but no delivery news came back (still on its way, phone off, or not reported). Hover a button for more.</p>}
+          {phone
+            ? <details className="rounded-lg border px-3 py-2 text-sm"><summary className="cursor-pointer select-none font-medium">What does this mean?</summary><div className="mt-3"><StatusSummary data={data} params={params} /></div></details>
+            : <StatusSummary data={data} params={params} />}
+          {phone && searchBox}
           {exportErr && <ErrorNote message={exportErr} />}
           {data.rows.length === 0 ? <Empty>{status === "all" ? "No messages in this date range." : "No messages like that in this date range."}</Empty> : (
             phone ? (
@@ -804,9 +811,8 @@ export function MessageLogCard({ params }: { params: Params }) {
                         <span className="min-w-0 break-all text-sm font-medium">{r.template}</span>
                         <span className={cn("inline-flex shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium", st.cls)}>{st.label}</span>
                       </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground"><ChevronRight className={cn("size-3 transition-transform", isOpen && "rotate-90")} aria-hidden />{whenAt(r.at)} · {r.phone || "—"}{warn && <TriangleAlert className="size-3.5 text-warn" aria-label={warn}><title>{warn}</title></TriangleAlert>}</div>
-                      <div className="mt-1 text-sm">{activityLine(r, !!data.revealed)}</div>
-                      {c && B && <div className="mt-1 text-xs"><span style={{ color: B.color }}>{B.title}</span> · {c.because ? `Most likely because ${c.because}.` : c.label}</div>}
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground"><ChevronRight className={cn("size-3 transition-transform", isOpen && "rotate-90")} aria-hidden />{whenAt(r.at)} · {data.revealed && r.name ? `${r.name} · ` : ""}{r.phone || "—"}{warn && <TriangleAlert className="size-3.5 text-warn" aria-label={warn}><title>{warn}</title></TriangleAlert>}</div>
+                                            {c && B && <div className="mt-1 line-clamp-2 text-xs"><span style={{ color: B.color }}>{B.title}</span> · {c.because ? `Most likely because ${c.because}.` : c.label}</div>}
                       {isOpen && <div className="-mx-3 mt-2 border-t bg-muted/20" onClick={(e) => e.stopPropagation()}><LogDetail r={r} revealed={!!data.revealed} canReveal={canReveal} /></div>}
                     </div>
                   )
@@ -845,9 +851,9 @@ export function MessageLogCard({ params }: { params: Params }) {
               </Table>
             </div>
           )}
-          {data.total > 25 && (
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-sm text-muted-foreground">
-              <span className="tnum">Showing {num(first)} to {num(Math.min(page * 25, data.total))} of {num(data.total)}</span>
+          {data.total > PAGE && (
+            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm text-muted-foreground sm:justify-between">
+              <span className="tnum hidden sm:inline">Showing {num(first)} to {num(Math.min(page * PAGE, data.total))} of {num(data.total)}</span>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}><ChevronLeft className="size-3.5" />Previous</Button>
                 <span className="tnum">Page {page} of {pages}</span>

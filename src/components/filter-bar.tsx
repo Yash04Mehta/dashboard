@@ -11,6 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useApi } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 import { useReveal } from "@/lib/reveal"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { cn } from "@/lib/utils"
 import { day } from "@/lib/format"
 
 const iso = (d: Date) => format(d, "yyyy-MM-dd")
@@ -56,6 +58,7 @@ export function MultiSelect({ label, options, value, onChange, counts }: { label
 
 export function DateRangeFilter() {
   const { meta, filters, set } = useFilters()
+  const phone = useIsMobile()
   const asOf = meta?.asOf ?? iso(new Date())
   const selected: DateRange | undefined = filters.from ? { from: parseISO(filters.from), to: filters.to ? parseISO(filters.to) : undefined } : undefined
   const presets: { label: string; from?: string; to?: string }[] = [
@@ -67,7 +70,9 @@ export function DateRangeFilter() {
     { label: "This year", from: `${asOf.slice(0, 4)}-01-01`, to: asOf },
     { label: "All time" },
   ]
-  const text = filters.from ? `${day(filters.from)} to ${day(filters.to ?? asOf)}` : "All time"
+  // a chosen preset is named ("Yesterday"), anything else shows its dates ("17 Nov 2026" for one day)
+  const named = presets.find((p) => p.from && p.from === filters.from && p.to === (filters.to ?? asOf))?.label
+  const text = !filters.from ? "All time" : named ?? (filters.from === (filters.to ?? asOf) ? day(filters.from) : `${day(filters.from)} to ${day(filters.to ?? asOf)}`)
   return (
     <Popover>
       <PopoverTrigger render={<Button variant="outline" size="sm" />}>
@@ -77,15 +82,15 @@ export function DateRangeFilter() {
       </PopoverTrigger>
       <PopoverContent align="start" className="w-auto gap-0 p-0">
         <div className="flex flex-col sm:flex-row">
-          <div className="flex gap-1 border-b p-2 sm:w-36 sm:flex-col sm:border-b-0 sm:border-r">
+          <div className="flex flex-wrap gap-1 border-b p-2 sm:w-36 sm:flex-col sm:flex-nowrap sm:border-b-0 sm:border-r">
             {presets.map((p) => (
               <Button key={p.label} variant={(p.from ?? "") === (filters.from ?? "") && (p.to ?? "") === (filters.to ?? "") ? "secondary" : "ghost"} size="sm" className="justify-start" onClick={() => set({ from: p.from, to: p.to })}>{p.label}</Button>
             ))}
           </div>
           <Calendar
             mode="range"
-            numberOfMonths={2}
-            defaultMonth={startOfMonth(subMonths(parseISO(asOf), 1))}   // always opens on the two latest months (today: Oct and Nov); older months are one click back
+            numberOfMonths={phone ? 1 : 2}
+            defaultMonth={startOfMonth(subMonths(parseISO(asOf), phone ? 0 : 1))}   // always opens on the two latest months (today: Oct and Nov); older months are one click back
             selected={selected}
             onSelect={(r) => set({ from: r?.from ? iso(r.from) : undefined, to: r?.to ? iso(r.to) : r?.from ? iso(r.from) : undefined })}
             startMonth={meta ? parseISO(meta.messages.min) : undefined}
@@ -100,25 +105,26 @@ export function DateRangeFilter() {
 export type FilterKind = "templates" | "sources" | "owners" | "statuses"
 
 /** The one switch that shows or hides full phone numbers and message text on this page (and keeps doing so on the next page until the browser is reloaded). */
-function RevealToggle() {
+function RevealToggle({ short = false }: { short?: boolean }) {
   const { reveal, setReveal, canReveal } = useReveal()
   if (!canReveal) return null
   return (
-    <Button variant={reveal ? "secondary" : "outline"} size="sm" className="w-full sm:ml-auto sm:w-auto" aria-pressed={reveal} onClick={() => setReveal(!reveal)}
+    <Button variant={reveal ? "secondary" : "outline"} size="sm" className={short ? "" : "w-full sm:ml-auto sm:w-auto"} aria-pressed={reveal} onClick={() => setReveal(!reveal)}
       title={reveal ? "Full phone numbers and message text are showing. Click to hide them again." : "Show full phone numbers and message text on this page. Reloading the page or logging out hides them again."}>
-      {reveal ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}{reveal ? "Hide phone numbers and messages" : "Show phone numbers and messages"}
+      {reveal ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}{short ? (reveal ? "Hide numbers" : "Show numbers") : reveal ? "Hide phone numbers and messages" : "Show phone numbers and messages"}
     </Button>
   )
 }
 
-export function FilterBar({ kinds, statusOptions, statusLabel = "Status", reveal = false, ownerOptions, ownerLabel = "Owner" }: { kinds: FilterKind[]; statusOptions?: string[]; statusLabel?: string; reveal?: boolean; ownerOptions?: string[]; ownerLabel?: string }) {
+export function FilterBar({ kinds, statusOptions, statusLabel = "Status", reveal = false, ownerOptions, ownerLabel = "Owner", compact = false }: { kinds: FilterKind[]; statusOptions?: string[]; statusLabel?: string; reveal?: boolean; ownerOptions?: string[]; ownerLabel?: string; compact?: boolean }) {
   const { meta, filters, set, reset, active } = useFilters()
   // how many messages each template sent in the chosen dates, shown beside its name in the Template list
   const tc = useApi<any>(kinds.includes("templates") ? "messages/templates" : null, { from: filters.from, to: filters.to })
   const tplCounts = useMemo(() => Object.fromEntries((tc.data?.rows ?? []).map((r: any) => [r.template_name, r.attempts])), [tc.data])
   if (!meta) return null
   return (
-    <div className="z-10 -mx-3 flex flex-wrap items-center gap-2 border-b bg-background/90 px-3 py-2.5 backdrop-blur sm:-mx-4 sm:px-4 md:sticky md:top-12 md:-mx-6 md:px-6" role="group" aria-label="Filters">
+    <div className={cn("z-10 -mx-3 flex items-center gap-2 bg-background/90 px-3 backdrop-blur", compact ? "no-scrollbar flex-nowrap overflow-x-auto py-1 [&>*]:shrink-0" : "flex-wrap border-b py-2.5 sm:-mx-4 sm:px-4 md:sticky md:top-12 md:-mx-6 md:px-6")} role="group" aria-label="Filters">
+      {reveal && compact && <RevealToggle short />}   {/* phone: first in the row, so it is always on screen */}
       <DateRangeFilter />
       {kinds.includes("templates") && <MultiSelect label="Template" options={meta.templates} value={filters.templates} onChange={(v) => set({ templates: v })} counts={tc.data ? tplCounts : undefined} />}
       {kinds.includes("sources") && <MultiSelect label="Lead source" options={meta.sources} value={filters.sources} onChange={(v) => set({ sources: v })} />}
@@ -127,7 +133,7 @@ export function FilterBar({ kinds, statusOptions, statusLabel = "Status", reveal
       {active > 0 && (
         <Button variant="ghost" size="sm" onClick={reset}><RotateCcw className="size-3.5" />Reset filters</Button>
       )}
-      {reveal && <RevealToggle />}
+      {reveal && !compact && <RevealToggle />}
     </div>
   )
 }

@@ -181,3 +181,7 @@
 @supports not selector(::-webkit-scrollbar) { * { scrollbar-width: thin; scrollbar-color: var(--sb-thumb) var(--sb-track); } }
 /* a select or list inside a popup must not paint a second scrollbar on top of its own */
 [data-slot="select-content"], [data-slot="popover-content"] { scrollbar-gutter: auto; }
+
+/* a row that is swiped sideways on a phone (filter chips, status chips, tabs): no scrollbar drawn */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

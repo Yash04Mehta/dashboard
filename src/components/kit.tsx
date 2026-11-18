@@ -132,7 +132,8 @@ export function ScoreGrid({ title, stats, cols = 4 }: { title?: ReactNode; stats
   )
 }
 
-export function ChartCard({ title, description, actions, children, className }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function ChartCard({ title, description, actions, children, className, bare }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; bare?: boolean }) {
+  if (bare) return <div className={cn("flex min-w-0 flex-col gap-3", className)}>{children}</div>   // phones: just the content, edge to edge, no card border or heading
   return (
     <Card className={cn("min-w-0", className)}>
       <CardHeader>

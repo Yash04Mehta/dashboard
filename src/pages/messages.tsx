@@ -4,6 +4,8 @@ import { ErrorNote, PageHeader } from "@/components/kit"
 import { ConversationDetails, FailureReasonsCard, LiveBadge, LivePage, MessageFunnelCard, MessageLogCard, MessageNumbers, SelectedTemplateCard, TrendCard } from "@/components/v1"
 import { useApi } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { MessagesPhone } from "@/components/phone-messages"
 
 /** Messages: the "Messages Section" from "Overview Page.md". Conversation details first, the message numbers, the funnel, then trends over the days. */
 export default function Messages() {
@@ -14,6 +16,15 @@ function Page() {
   const { params } = useFilters()
   const { templates: _t, ...noTemplate } = params
   const stamp = useApi<any>("messages/kpis", params)
+  const phone = useIsMobile()
+  // phone: filters as one swipeable row, then the tabbed screen (see components/phone-messages.tsx)
+  if (phone) return (
+    <div className="flex flex-col gap-2">
+      <FilterBar kinds={["templates", "sources", "owners"]} reveal compact />
+      <ErrorNote message={stamp.error} />
+      <MessagesPhone params={params} updatedAt={stamp.updatedAt} />
+    </div>
+  )
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title="Messages" description="How your WhatsApp messages and templates perform. Each number shows the count and the percentage." actions={<LiveBadge updatedAt={stamp.updatedAt} />} />
