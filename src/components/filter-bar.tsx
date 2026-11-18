@@ -104,8 +104,8 @@ function RevealToggle() {
   const { reveal, setReveal, canReveal } = useReveal()
   if (!canReveal) return null
   return (
-    <Button variant={reveal ? "secondary" : "outline"} size="sm" className="ml-auto" aria-pressed={reveal} onClick={() => setReveal(!reveal)}
-      title={reveal ? "Full phone numbers and message text are showing. Click to hide them again." : "Show full phone numbers and message text on this page. Reloading the page hides them again."}>
+    <Button variant={reveal ? "secondary" : "outline"} size="sm" className="w-full sm:ml-auto sm:w-auto" aria-pressed={reveal} onClick={() => setReveal(!reveal)}
+      title={reveal ? "Full phone numbers and message text are showing. Click to hide them again." : "Show full phone numbers and message text on this page. Reloading the page or logging out hides them again."}>
       {reveal ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}{reveal ? "Hide phone numbers and messages" : "Show phone numbers and messages"}
     </Button>
   )
@@ -118,7 +118,7 @@ export function FilterBar({ kinds, statusOptions, statusLabel = "Status", reveal
   const tplCounts = useMemo(() => Object.fromEntries((tc.data?.rows ?? []).map((r: any) => [r.template_name, r.attempts])), [tc.data])
   if (!meta) return null
   return (
-    <div className="sticky top-12 z-10 -mx-4 flex flex-wrap items-center gap-2 border-b bg-background/90 px-4 py-2.5 backdrop-blur md:-mx-6 md:px-6" role="group" aria-label="Filters">
+    <div className="z-10 -mx-3 flex flex-wrap items-center gap-2 border-b bg-background/90 px-3 py-2.5 backdrop-blur sm:-mx-4 sm:px-4 md:sticky md:top-12 md:-mx-6 md:px-6" role="group" aria-label="Filters">
       <DateRangeFilter />
       {kinds.includes("templates") && <MultiSelect label="Template" options={meta.templates} value={filters.templates} onChange={(v) => set({ templates: v })} counts={tc.data ? tplCounts : undefined} />}
       {kinds.includes("sources") && <MultiSelect label="Lead source" options={meta.sources} value={filters.sources} onChange={(v) => set({ sources: v })} />}

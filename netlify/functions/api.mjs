@@ -8,7 +8,8 @@
 //   DATABASE_URL (or PGHOST + PGUSER + PGPASSWORD + PGDATABASE)   a READ-ONLY login (dashboard_ro)
 //   DEMO_USER, DEMO_PASS     your own login for the site (the defaults are public in the repo, so the default password is refused)
 //   SESSION_SECRET           any long random text (each function copy must sign the login cookie the same way)
-// Phone numbers and message text can only be revealed if you also set ALLOW_REVEAL=true; it is off here by default.
+// Phone numbers and message text: every /api route needs the login above, so a logged-in user gets the "Show phone numbers and messages" switch (everything is still
+// hidden until they press it, and hidden again on reload or log out). Set ALLOW_REVEAL=false in Netlify to switch the reveal off for everyone on the hosted site.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -16,7 +17,7 @@ import path from 'node:path'
 export const config = { path: '/api/*' }
 
 process.env.AQ_SERVERLESS = '1'
-process.env.ALLOW_REVEAL ||= 'false'
+process.env.ALLOW_REVEAL ||= 'true'
 // where netlify.toml ships config/ (rate card, template list): the first place that has it
 process.env.AQ_CONFIG_DIR ||= [process.env.LAMBDA_TASK_ROOT, process.cwd(), '/var/task'].filter(Boolean).map((d) => path.join(d, 'config')).find((d) => fs.existsSync(path.join(d, 'rate_card.csv'))) || path.join(process.cwd(), 'config')
 

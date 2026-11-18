@@ -4,7 +4,7 @@ import { Activity, Headset, LogOut, MessageSquare, MessagesSquare, Moon, Sun, Us
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
+import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { RefreshButton } from "@/components/refresh"
 import { ExportReportButton } from "@/components/export-report"
@@ -41,6 +41,23 @@ function ThemeToggle() {
   )
 }
 
+/** The menu list. On a phone the menu is a slide-over sheet, so choosing a page also closes it. */
+function NavList({ current, linkSearch }: { current: (typeof NAV)[number]; linkSearch: (keep: string[]) => string }) {
+  const { setOpenMobile } = useSidebar()
+  return (
+    <SidebarMenu>
+      {NAV.map((n) => (
+        <SidebarMenuItem key={n.to}>
+          <SidebarMenuButton isActive={n === current} render={<NavLink to={{ pathname: n.to, search: linkSearch(n.keep) }} onClick={() => setOpenMobile(false)} />}>
+            <n.icon />
+            <span>{n.label}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ))}
+    </SidebarMenu>
+  )
+}
+
 export function AppLayout() {
   const { meta, metaError } = useFilters()
   const { logout, hasLogin } = useAuth()
@@ -66,16 +83,7 @@ export function AppLayout() {
           <SidebarGroup>
             <SidebarGroupLabel>Reports</SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu>
-                {NAV.map((n) => (
-                  <SidebarMenuItem key={n.to}>
-                    <SidebarMenuButton isActive={n === current} render={<NavLink to={{ pathname: n.to, search: linkSearch(n.keep) }} />}>
-                      <n.icon />
-                      <span>{n.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
+              <NavList current={current} linkSearch={linkSearch} />
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -91,13 +99,13 @@ export function AppLayout() {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-w-0 overflow-x-clip">
-        <header className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur">
+        <header className="sticky top-0 z-20 flex h-12 items-center gap-1.5 border-b bg-background/85 px-3 backdrop-blur sm:gap-2 sm:px-4">
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-5" />
-          <span className="text-sm font-medium">{current.title}</span>
-          <div className="ml-auto flex items-center gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle />{hasLogin && <Button variant="ghost" size="sm" onClick={logout}><LogOut className="size-4" />Log out</Button>}</div>
+          <span className="min-w-0 truncate text-sm font-medium">{current.title}</span>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle />{hasLogin && <Button variant="ghost" size="sm" onClick={logout} aria-label="Log out" title="Log out"><LogOut className="size-4" /><span className="hidden sm:inline">Log out</span></Button>}</div>
         </header>
-        <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-6 p-4 md:p-6">
+        <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-5 p-3 sm:gap-6 sm:p-4 md:p-6">
           {metaError ? (
             <div role="alert" className="rounded-lg border border-bad/40 bg-bad/10 p-4 text-sm text-bad">
               The server could not load the data: {metaError}. Check that it is running (npm start) and look at its window for the reason.

@@ -15,7 +15,7 @@ The dashboard can also run as a website on Netlify: Netlify serves the built web
 | `DATABASE_URL` | the read-only `dashboard_ro` connection (or `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`). The database must be reachable from the internet. Use the direct or session-mode address, not a transaction pooler |
 | `DEMO_USER`, `DEMO_PASS` | your own login for the site. The default password is public and is refused |
 | `SESSION_SECRET` | any random text of 32 or more characters |
-| `ALLOW_REVEAL` | leave unset (phone numbers and message text stay hidden). `true` allows the reveal switch |
+| `ALLOW_REVEAL` | leave unset: after logging in, a "Show phone numbers and messages" switch appears (everything stays hidden until it is pressed, and again after a reload or log out). `false` removes the switch for everyone |
 
 Until all four are set the site says what is missing on the login screen. Do not put the `.env` file in the repo; it is ignored on purpose. The website works only with the live database, never with the CSV files.
 

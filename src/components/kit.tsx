@@ -100,20 +100,20 @@ const COLS = {
 export function MetricCard({ icon: Icon, label, value, unit, meter, tone = "default", foot, delta, hint, loading }: Stat) {
   return (
     <Card className="min-w-0 gap-0 py-0 transition-[translate,box-shadow] duration-200 ease-out hover:-translate-y-1 hover:shadow-lg hover:shadow-black/10 hover:ring-foreground/20 focus-within:-translate-y-1 focus-within:shadow-lg dark:hover:shadow-black/50 motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:focus-within:translate-y-0">
-      <CardContent className="flex flex-col gap-2 py-4">
-        <div className="flex items-center gap-2.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-muted/40" style={{ color: TONE[tone] }}><Icon className="size-4" /></span>
-          <span className="truncate text-sm font-medium">{label}</span>
+      <CardContent className="flex flex-col gap-2 px-3 py-3 sm:px-4 sm:py-4">
+        <div className="flex items-center gap-2 sm:gap-2.5">
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-muted/40 sm:size-8" style={{ color: TONE[tone] }}><Icon className="size-3.5 sm:size-4" /></span>
+          <span className="text-xs font-medium leading-tight sm:truncate sm:text-sm">{label}</span>
           {hint && <InfoTip>{hint}</InfoTip>}
         </div>
         {loading ? <Skeleton className="h-9 w-28" /> : (
-          <div className="tnum flex items-baseline gap-1 text-3xl font-semibold tracking-tight">{value}{unit && <span className="text-base font-normal text-muted-foreground">{unit}</span>}</div>
+          <div className="tnum flex flex-wrap items-baseline gap-x-1 text-2xl font-semibold tracking-tight sm:text-3xl">{value}{unit && <span className="text-base font-normal text-muted-foreground">{unit}</span>}</div>
         )}
         <div className="h-1 overflow-hidden rounded-full bg-muted" aria-hidden={meter == null} style={{ visibility: meter == null ? "hidden" : "visible" }}>
           <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, meter ?? 0))}%`, background: TONE[tone] }} />
         </div>
       </CardContent>
-      <CardFooter className="min-h-10 flex-wrap gap-x-3 gap-y-0.5 py-2.5 text-sm text-muted-foreground">
+      <CardFooter className="min-h-10 flex-wrap gap-x-3 gap-y-0.5 px-3 py-2.5 text-xs text-muted-foreground sm:px-4 sm:text-sm">
         {foot && <span>{foot}</span>}
         <DeltaChip delta={delta} />
       </CardFooter>
@@ -126,7 +126,8 @@ export function ScoreGrid({ title, stats, cols = 4 }: { title?: ReactNode; stats
   return (
     <section className="flex flex-col gap-3">
       {title && <h2 className="text-sm font-medium text-muted-foreground">{title}</h2>}
-      <div className={cn("grid grid-cols-1 gap-4", COLS[cols])}>{stats.map((st) => <MetricCard key={st.label} {...st} />)}</div>
+      {/* phones: two cards per row (the odd last one spans both), so the figures are not a mile-long column */}
+      <div className={cn("grid grid-cols-2 gap-3 sm:gap-4 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1", COLS[cols])}>{stats.map((st) => <MetricCard key={st.label} {...st} />)}</div>
     </section>
   )
 }
@@ -221,7 +222,7 @@ export function SortableTable<T>({ rows, cols, rowKey, initialSort, initialDir =
         </div>
       )}
       <div className="overflow-auto rounded-lg border" style={{ maxHeight }}>
-        <Table ref={rs.ref} style={rs.style}>
+        <Table ref={rs.ref} style={rs.style} className="min-w-[34rem]">
           {rs.colgroup}
           <TableHeader className={STICKY_HEAD}>
             <TableRow>

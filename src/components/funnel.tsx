@@ -44,7 +44,23 @@ export function Funnel({ stages, ariaLabel, highlightWorst = true, unit = "messa
   const h = hot == null ? null : stages[hot]
 
   return (
-    <div className="overflow-x-auto">
+    <>
+    {/* phones: the wide band drawing needs 480 to 720px, so a narrow screen gets one bar per step instead (same numbers, no sideways scrolling) */}
+    <div className="flex flex-col gap-3.5 sm:hidden" role="img" aria-label={ariaLabel}>
+      {stages.map((s, i) => (
+        <div key={s.label}>
+          <div className="flex items-center justify-between gap-2 text-sm">
+            <span className="flex min-w-0 items-center gap-1.5 font-medium"><span className="shrink-0 text-muted-foreground">{s.icon}</span><span className="truncate">{s.label}</span></span>
+            <span className="flex shrink-0 items-baseline gap-1.5"><span className="tnum text-lg font-semibold">{num(s.value)}</span>{i > 0 && <span className="tnum text-xs text-muted-foreground">{pct(100 * s.value / first)}</span>}</span>
+          </div>
+          <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full" style={{ width: `${Math.min(100, (100 * s.value) / first)}%`, background: sleek || flat ? sh(i) : "var(--c1)" }} /></div>
+          {i < last && lost[i] > 0 && (
+            <div className="mt-1 text-xs text-muted-foreground"><b className="tnum" style={{ color: highlightWorst && i === worst ? BAD : undefined }}>−{num(lost[i])}</b> dropped out{s.drop ? `: ${s.drop}` : ""}</div>
+          )}
+        </div>
+      ))}
+    </div>
+    <div className="hidden overflow-x-auto sm:block">
       <div ref={box} className={compact ? "relative min-w-[480px]" : "relative min-w-[720px]"} onMouseMove={(e) => aim(e.clientX)} onClick={(e) => aim(e.clientX)} onMouseLeave={() => setHot(null)}>
         <div className="relative h-[68px]">
           {stages.map((s, i) => (
@@ -106,5 +122,6 @@ export function Funnel({ stages, ariaLabel, highlightWorst = true, unit = "messa
         )}
       </div>
     </div>
+    </>
   )
 }

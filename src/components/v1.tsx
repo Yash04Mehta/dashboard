@@ -23,6 +23,7 @@ import { BUCKETS as FAIL_BUCKETS, BUCKET_ORDER, GROUPS, bucketOf, classify, clas
 import { nameIssue, phoneIssue } from "@/lib/validate"
 import { priceTemplates } from "@/lib/costs"
 import { cn } from "@/lib/utils"
+import { useIsMobile } from "@/hooks/use-mobile"
 
 const LIVE_REFRESH_MS = 60_000      // matches the server's 60 s answer cache in live mode
 const RESPONSE_BUCKETS = ["Under 5 min", "5 to 60 min", "1 to 6 hours", "6 to 24 hours", "1 to 3 days", "Over 3 days"]
@@ -128,7 +129,7 @@ export function MessageFunnelCard({ params }: { params: Params }) {
   const mk = useApi<any>("messages/kpis", params)
   const c = mk.data?.current
   return (
-    <ChartCard title="Message funnel" description="Each column is a step. The wide band is how many carried on to the next step; the curve below shows how many dropped out. Hover over a step for details.">
+    <ChartCard title="Message funnel" description="Each column is a step. The wide band is how many carried on to the next step; the curve below shows how many dropped out. Hover over (or tap) a step for details.">
       {!c ? <ChartSkeleton h={300} /> : !c.measured ? <Empty>No messages were tracked in this period.</Empty> : (
         <>
           <Funnel sleek colors={WA_COLORS} ariaLabel={`Of ${num(c.measured)} messages, ${num(c.delivered_adj)} were delivered, ${num(c.read_adj)} read and ${num(c.replied)} replied.`}
@@ -168,6 +169,7 @@ export function SelectedTemplateCard({ params }: { params: Params }) {
 
 /** Customer response time: how long customers take to answer a message. */
 export function ResponseTimeCard({ params }: { params: Params }) {
+  const phone = useIsMobile()   // on a phone the six bucket names do not fit side by side, so they are tilted
   const [kind, setKind] = useState<"reply" | "read">("reply")
   const rt = useApi<any>("messages/reply-time", params)
   const rows = useMemo(() => (rt.data?.[kind]?.buckets ?? []).map((b: any) => ({ label: RESPONSE_BUCKETS[b.ord - 1], share: b.share ?? 0 })), [rt.data, kind])
@@ -184,7 +186,7 @@ export function ResponseTimeCard({ params }: { params: Params }) {
           <ChartContainer config={cfg} className="h-[230px] w-full">
             <BarChart data={rows} margin={{ left: 4, right: 8, top: 8 }}>
               <CartesianGrid vertical={false} />
-              <XAxis dataKey="label" {...axis} interval={0} tick={{ fontSize: 11 }} />
+              <XAxis dataKey="label" {...axis} interval={0} tick={{ fontSize: 11 }} {...(phone ? { angle: -40, textAnchor: "end", height: 58 } : {})} />
               <YAxis {...axis} width={44} tickFormatter={(v) => v + "%"} />
               <ChartTooltip content={<ChartTooltipContent formatter={rowFormatter(cfg, "%")} />} />
               <Bar isAnimationActive={false} dataKey="share" fill="var(--color-share)" radius={[3, 3, 0, 0]} />
@@ -710,6 +712,7 @@ function StatusSummary({ data, params }: { data: any; params: Params }) {
 }
 
 export function MessageLogCard({ params }: { params: Params }) {
+  const phone = useIsMobile()   // on a phone the six-column table is shown as one card per message
   const { meta } = useFilters()
   const [status, setStatus] = useState<string>("all")
   const { reveal } = useReveal()
@@ -789,6 +792,27 @@ export function MessageLogCard({ params }: { params: Params }) {
           <StatusSummary data={data} params={params} />
           {exportErr && <ErrorNote message={exportErr} />}
           {data.rows.length === 0 ? <Empty>{status === "all" ? "No messages in this date range." : "No messages like that in this date range."}</Empty> : (
+            phone ? (
+              <div className={cn("flex flex-col divide-y rounded-lg border transition-opacity", d.loading && "opacity-60")}>
+                {data.rows.map((r: any) => {
+                  const st = LOG_STYLE[r.status] ?? LOG_STYLE.sent, isOpen = open === r.id
+                  const c = classifyMsg(r), B = c ? FAIL_BUCKETS[bucketOf(c.group.id)] : null
+                  const warn = [phoneIssue(r.phone_issue)?.label && `Number: ${phoneIssue(r.phone_issue)!.label}`, nameIssue(r.name_issue)?.label && `Name: ${nameIssue(r.name_issue)!.label}`].filter(Boolean).join(". ")
+                  return (
+                    <div key={r.id} tabIndex={0} role="button" aria-expanded={isOpen} className={cn("cursor-pointer px-3 py-2.5 text-left", isOpen && "bg-muted/40")} onClick={() => setOpen(isOpen ? null : r.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : r.id) } }}>
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 break-all text-sm font-medium">{r.template}</span>
+                        <span className={cn("inline-flex shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium", st.cls)}>{st.label}</span>
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground"><ChevronRight className={cn("size-3 transition-transform", isOpen && "rotate-90")} aria-hidden />{whenAt(r.at)} · {r.phone || "—"}{warn && <TriangleAlert className="size-3.5 text-warn" aria-label={warn}><title>{warn}</title></TriangleAlert>}</div>
+                      <div className="mt-1 text-sm">{activityLine(r, !!data.revealed)}</div>
+                      {c && B && <div className="mt-1 text-xs"><span style={{ color: B.color }}>{B.title}</span> · {c.because ? `Most likely because ${c.because}.` : c.label}</div>}
+                      {isOpen && <div className="-mx-3 mt-2 border-t bg-muted/20" onClick={(e) => e.stopPropagation()}><LogDetail r={r} revealed={!!data.revealed} canReveal={canReveal} /></div>}
+                    </div>
+                  )
+                })}
+              </div>
+            ) :
             <div className={cn("max-h-[34rem] overflow-auto rounded-lg border transition-opacity", d.loading && "opacity-60")}>
               <Table ref={rs.ref} style={rs.style}>
                 {rs.colgroup}
@@ -822,7 +846,7 @@ export function MessageLogCard({ params }: { params: Params }) {
             </div>
           )}
           {data.total > 25 && (
-            <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-sm text-muted-foreground">
               <span className="tnum">Showing {num(first)} to {num(Math.min(page * 25, data.total))} of {num(data.total)}</span>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}><ChevronLeft className="size-3.5" />Previous</Button>
