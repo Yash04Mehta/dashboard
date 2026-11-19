@@ -136,7 +136,7 @@ function flow(m: { measured: number; delivered: number; failed: number; noConf: 
   const cyFail = cyDel + 85, cyNoConf = cyFail + P, cyTrk = (cyDel + cyNoConf) / 2
   const pc = (v: number, base: number) => `${p1(share(v, base))} of `
   const boxes: Box[] = [
-    { id: "trk", col: 0, cy: cyTrk, label: "Messages tracked", value: m.measured, sub: "first sends we can follow", fill: col.brand },
+    { id: "trk", col: 0, cy: cyTrk, label: "Messages tracked", value: m.measured, sub: "messages we can follow", fill: col.brand },
     { id: "del", col: 1, cy: cyDel, label: "Delivered", value: m.delivered, sub: pc(m.delivered, m.measured) + "tracked", fill: col.brand2 },
     { id: "fail", col: 1, cy: cyFail, label: "Failed", value: m.failed, sub: pc(m.failed, m.measured) + "tracked", fill: col.bad },
     { id: "nc", col: 1, cy: cyNoConf, label: "No confirmation", value: m.noConf, sub: pc(m.noConf, m.measured) + "tracked", fill: col.warn },
@@ -254,7 +254,7 @@ export function renderReport(d: ReportData): string {
     const noConf = Math.max(0, m.measured - m.delivered_adj - m.failed)
     const notRead = Math.max(0, m.delivered_adj - m.read_adj), noReply = Math.max(0, m.read_adj - m.replied)
     msgBody += `<p class="grp">Every tracked message ends in one of three ways. These three add up to the tracked total.</p><div class="tiles t4">${[
-      tile("Messages tracked", n0(m.measured), `first send to each person and template. ${n0(m.attempts)} sent in all; ${n0(m.unmeasured)} repeats cannot be followed`),
+      tile("Messages tracked", n0(m.measured), m.unmeasured ? `${n0(m.attempts)} sent in all; ${n0(m.unmeasured)} older repeat sends cannot be followed` : "every message sent, on the day it was sent"),
       tile("Delivered", n0(m.delivered_adj), `${p1(m.delivered_pct)} of tracked · reached the phone`, mpv(m.delivered_pct, mp?.delivered_pct, "up")),
       tile("Failed to send", n0(m.failed), `${p1(m.failed_pct)} of tracked · WhatsApp refused them`, mpv(m.failed_pct, mp?.failed_pct, "down"), m.failed_pct > 5 ? "bad" : ""),
       tile("No confirmation", n0(noConf), `${p1(share(noConf, m.measured))} of tracked · no status came back; many were probably delivered`, "", "warn"),

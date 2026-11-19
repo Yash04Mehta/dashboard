@@ -9,12 +9,16 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
 const SERVERLESS = process.env.AQ_SERVERLESS === '1'   // running as a Netlify Function (set by netlify/functions/api.mjs)
 const readSql = (f) => fs.readFileSync(path.join(here, 'sql', f), 'utf8')
+// Which message view the live pages read. reporting.v_message_sends (sql/message_sends.sql) has one row per message sent, on the day it was sent,
+// so the numbers match WATI. reporting.v_message_rows (one row per phone + template, dated by the first send) is the old source; AQ_MESSAGES=pivot goes back to it.
+const LIVE_MSG = process.env.AQ_MESSAGES === 'pivot' ? 'reporting.v_message_rows' : 'reporting.v_message_sends'
 const CSV_TABLES = ['lead_insight', 'opportunity_insight', 'wati_message_log', 'wati_message_pivot', 'wati_sessions']
 
 const normalise = (v) => (typeof v === 'bigint' ? Number(v) : v)
 const normRows = (rows) => rows.map((r) => { const o = {}; for (const k in r) o[k] = normalise(r[k]); return o })
 
-const DDL = `
+// the CSV tables (also used by server/test_messages.mjs)
+export const DDL = `
 create table lead_insight (lead_id varchar primary key, owner_id varchar, customer_name varchar, customer_number varchar, lead_status varchar, lead_source varchar, lead_manager_name varchar, page_url text, welcome_message int, first_follow_up_message_after24hr int, when_lead_converted_into_nurturing int, when_lead_converted_into_unqualified int, when_lead_converted_into_not_connected int, "1st_follow_up_message" int, "2nd_follow_up_message" int, "3rd_follow_up_message" int, created_at timestamp, updated_at timestamp);
 create table opportunity_insight (opportunity_id varchar primary key, owner_id varchar, customer_name varchar, customer_number varchar, opportunity_status varchar, opportunity_manager_name varchar, lead_manager_name varchar, send_salesman_details_to_customer int, send_customer_details_to_salesperson int, "1st_follow_up_message_after_48hr" int, "2nd_follow_up_message_after_24hr" int, "1st_follow_up_message" int, "2nd_follow_up_message" int, "3rd_follow_up_message" int, created_at timestamp, updated_at timestamp, follow_up_message_to_salesperson_after_24hr int, opportunity_won int, opportunity_loss int);
 create table wati_message_log (id bigint primary key, wati_event_id text unique, whatsapp_message_id text, event_type text, is_owner boolean, wa_id text, sender_name text, message_type text, message_text text, list_reply_title text, conversation_id text, operator_email text, message_created_at timestamptz, received_at timestamptz, n8n_execution_id text, raw_payload jsonb);
@@ -41,14 +45,23 @@ export async function connect() {
     //    and the login itself (dashboard_ro) can only read anyway.
     if (process.env.AQ_WORKER === '1') {
       // Cloudflare Worker: a connection cannot be shared between requests, so each query opens its own.
-      const query = async (sql, args = []) => {
+      const run = async (sql, args) => {
         const c = new pg.Client({ ...liveConfig(), ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false } })
         await c.connect()
         try { await c.query('begin read only'); const r = await c.query(sql, args); await c.query('commit'); return r.rows }
         finally { c.end().catch(() => {}) }
       }
+      // A Worker cannot check for reporting.v_message_sends at start-up (see below), so if sql/message_sends.sql has not been run yet,
+      // the same query is run once more on the old view instead of failing.
+      const query = async (sql, args = []) => {
+        try { return await run(sql, args) }
+        catch (e) {
+          if (sql.includes('reporting.v_message_sends') && /v_message_sends/.test(e.message) && /(does not exist|permission denied)/.test(e.message)) return run(sql.replaceAll('reporting.v_message_sends', 'reporting.v_message_rows'), args)
+          throw e
+        }
+      }
       // No queries here: a Worker request must never wait on work another request started. The database clock is UTC, so "today" is worked out locally.
-      return { mode: 'live', query, MSG: 'reporting.v_message_rows', get asOf() { return new Date().toISOString().slice(0, 10) }, cacheMs: 60_000 }
+      return { mode: 'live', query, MSG: LIVE_MSG, get asOf() { return new Date().toISOString().slice(0, 10) }, cacheMs: 60_000 }
     }
     const pool = new pg.Pool({
       ...liveConfig(),
@@ -61,12 +74,17 @@ export async function connect() {
     const query = async (sql, args = []) => (await pool.query(sql, args)).rows
     try { await query('select 1 from reporting.v_leads limit 1'); await query('select 1 from reporting.v_message_rows limit 1') }
     catch (e) { throw new Error('Live mode: the reporting views are missing or not readable (' + e.message + '). Run server/sql/reporting_views.sql and server/sql/app.sql first.') }
+    let MSG = LIVE_MSG
+    if (MSG !== 'reporting.v_message_rows') {
+      try { await query(`select 1 from ${MSG} limit 1`) }
+      catch (e) { console.warn(`[db] ${MSG} is not readable (${e.message}). Using reporting.v_message_rows (first send only) until server/sql/message_sends.sql is run.`); MSG = 'reporting.v_message_rows' }
+    }
     // proof that writes are refused on a pooled connection: creating a temporary table must fail with a read-only error
     let refused = false
     try { await query('create temp table _aq_readonly_probe (a int)') } catch (e) { refused = /read-only/i.test(e.message) }
     if (!refused) throw new Error('Live mode stopped: the database connection is not read-only. The dashboard must never be able to write.')
     const [{ d }] = await query('select current_date::text as d')
-    const live = { mode: 'live', query, MSG: 'reporting.v_message_rows', asOf: d, cacheMs: 60_000 }
+    const live = { mode: 'live', query, MSG, asOf: d, cacheMs: 60_000 }
     // keep "today" right when the server runs for days, and keep a few connections open so the first page load does not pay for them
     if (!SERVERLESS) {   // (a function is frozen between requests: no timers, and a cold start must not pay for extra connections)
       setInterval(async () => { try { live.asOf = (await query('select current_date::text as d'))[0].d } catch { /* keep the old date */ } }, 10 * 60_000).unref()

@@ -21,3 +21,9 @@ follow_up_message_template,UTILITY,Aquant Template.xlsx 29 Oct 2026
 1st_follow_up_message_task1,UTILITY,Aquant Template.xlsx 29 Oct 2026
 2nd_follow_up_message_task,UTILITY,Aquant Template.xlsx 29 Oct 2026
 3rd_follow_up_message_task,UTILITY,Aquant Template.xlsx 29 Oct 2026
+demo_follow_up_after_24hr,UTILITY,WATI getMessageTemplates 19 Nov 2026 (replaces follow_up_after_24hr)
+demo_loss_message_template_1,UTILITY,WATI getMessageTemplates 19 Nov 2026 (replaces loss_message_template_1)
+demo_lead_to_notconnected1,UTILITY,WATI getMessageTemplates 19 Nov 2026 (replaces lead_to_notconnected1)
+demo_send_salesman_details,UTILITY,WATI getMessageTemplates 19 Nov 2026 (replaces send_salesman_details)
+24hr_messages,UTILITY,WATI getMessageTemplates 19 Nov 2026
+delhi_opening_message_v2,UTILITY,WATI getMessageTemplates 19 Nov 2026

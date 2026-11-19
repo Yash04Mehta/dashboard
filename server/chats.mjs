@@ -10,15 +10,22 @@
 // A chat is dated by its first message (India time). Template cost uses config/rate_card.csv exactly like the Costs page.
 import { makePricer } from './costs.mjs'
 
-const mkBase = (withAsg, withWati) => `with m as (
+// WATI's chatbots send their messages as session messages too. WATI names them "Bot" (flow chatbots) and "KnowBot" (the AI assistant); WATI's operator
+// list (sql/wati_status.sql) adds any other bot that owns chats. Bot messages are NOT team replies: they are left out of "Replies from our team", reply time
+// and the person who replied. They still count as an answer for the chat status (the customer did get a reply).
+export const BOT_NAMES = ['bot', 'knowbot']
+const botTest = (withWati) => `(lower(op) = any(array['${BOT_NAMES.join("','")}'])${withWati ? ' or op in (select assignee_name from reporting.v_wati_conversations where assignee_is_bot and assignee_name is not null)' : ''})`
+const mkBase = (withAsg, withWati) => `with m0 as (
     select chat_key, direction, at_utc, at_ist, phone10, sender_name, assignee_id, failed_at, template_name, conversation_id,
            nullif(coalesce(nullif(operator_name, ''), operator_email), '') as op
     from reporting.v_chat_messages),
+  m as (select m0.*, (m0.direction = 'session' and m0.op is not null and ${botTest(withWati)}) as by_bot from m0),
   names as (select assignee_id as aid, max(op) as op from m where assignee_id is not null and op is not null group by 1),
   c0 as (
     select chat_key, min(at_ist) as first_at, max(at_ist) as last_at, count(*)::int as msgs,
       count(*) filter (where direction = 'inbound')::int as cust_msgs,
-      count(*) filter (where direction = 'session')::int as team_msgs,
+      count(*) filter (where direction = 'session' and not by_bot)::int as team_msgs,
+      count(*) filter (where by_bot)::int as bot_msgs,
       count(*) filter (where direction = 'template' and failed_at is null)::int as templates,
       min(at_utc) as first_utc, max(at_utc) as last_utc,
       min(at_utc) filter (where direction = 'inbound') as first_cust,
@@ -28,9 +35,9 @@ const mkBase = (withAsg, withWati) => `with m as (
       (array_agg(sender_name order by at_utc desc) filter (where sender_name is not null))[1] as customer,
       (array_agg(assignee_id order by at_utc desc) filter (where assignee_id is not null))[1] as aid,
       (array_agg(conversation_id order by at_utc desc) filter (where conversation_id is not null))[1] as conv,
-      (array_agg(op order by at_utc desc) filter (where direction = 'session' and op is not null))[1] as replier
+      (array_agg(op order by at_utc desc) filter (where direction = 'session' and op is not null and not by_bot))[1] as replier
     from m group by chat_key),
-  rep as (select c0.chat_key, min(s.at_utc) as first_reply from c0 join m s on s.chat_key = c0.chat_key and s.direction = 'session' and s.at_utc > c0.first_cust group by 1),
+  rep as (select c0.chat_key, min(s.at_utc) as first_reply from c0 join m s on s.chat_key = c0.chat_key and s.direction = 'session' and not s.by_bot and s.at_utc > c0.first_cust group by 1),
   ch as (
     select c0.*, c0.first_at::date as d, rep.first_reply,
       round((extract(epoch from (rep.first_reply - c0.first_cust)) / 60.0)::numeric, 1)::float as fr_min,
@@ -87,7 +94,7 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
         count(*) filter (where status = 'missed')::int as missed, count(*) filter (where status = 'outbound')::int as outbound,
         count(*) filter (where window_closed)::int as window_closed,
         count(*) filter (where assigned)::int as assigned, count(*) filter (where cust_msgs > 0 and not assigned)::int as unassigned,
-        coalesce(sum(cust_msgs), 0)::int as cust_msgs, coalesce(sum(team_msgs), 0)::int as team_msgs, coalesce(sum(templates), 0)::int as templates, coalesce(sum(msgs), 0)::int as messages,
+        coalesce(sum(cust_msgs), 0)::int as cust_msgs, coalesce(sum(team_msgs), 0)::int as team_msgs, coalesce(sum(bot_msgs), 0)::int as bot_msgs, coalesce(sum(templates), 0)::int as templates, coalesce(sum(msgs), 0)::int as messages,
         count(*) filter (where fr_min is not null)::int as answered, count(*) filter (where fr_min <= 5)::int as within_5, count(*) filter (where fr_min <= 60)::int as within_hour,
         round((percentile_cont(0.5) within group (order by fr_min))::numeric, 1)::float as fr_median, round(avg(fr_min)::numeric, 1)::float as fr_avg
       from ch ${w.sql}`, w.args)

@@ -287,7 +287,7 @@ export function makeApi(ctx) {
     if (p10.length) {
       for (const r of await Q(`select phone10, count(*)::int as n from reporting.v_leads where phone10 = any($1::text[]) group by 1`, [p10])) counts.leads[r.phone10] = r.n
       for (const r of await Q(`select phone10, count(*)::int as n from reporting.v_opps where phone10 = any($1::text[]) group by 1`, [p10])) counts.opps[r.phone10] = r.n
-      for (const r of await Q(`select phone10, count(*)::int as templates, sum(attempts_est)::int as attempts from ${MSG} where phone10 = any($1::text[]) group by 1`, [p10])) counts.msgs[r.phone10] = r
+      for (const r of await Q(`select phone10, count(distinct template_name)::int as templates, sum(attempts_est)::int as attempts from ${MSG} where phone10 = any($1::text[]) group by 1`, [p10])) counts.msgs[r.phone10] = r
     }
     return { results: picked.map((e) => ({
       key: e.key, name: e.name || '(no name)', owner: e.owner, last: e.last, hasPhone: !!e.phone10, phone: e.phone10 ? MASK(e.phone10) : '',
@@ -311,7 +311,11 @@ export function makeApi(ctx) {
       leads = await Q(`select *, ${TS('created_at')} as created_ts, ${TS('updated_at')} as updated_ts from reporting.v_leads where phone10 = $1 order by created_at desc`, [phone10])
       opps = await Q(`select *, ${TS('created_at')} as created_ts, ${TS('updated_at')} as updated_ts from reporting.v_opps where phone10 = $1 order by created_at desc`, [phone10])
     }
-    const msgs = phone10 ? await Q(`select m.template_name, m.attempts_est, m.measured_attempts, m.unmeasured_sends, m.delivered_adj, m.read_adj, m.replied, m.failed, ${TS('m.first_sent_at_ist')} as first_sent, ${TS('m.last_event_at_ist')} as last_event from ${MSG} m where m.phone10 = $1 order by m.first_sent_at_ist desc`, [phone10]) : []
+    // one row per template (the message view may hold one row per send)
+    const msgs = phone10 ? await Q(`select m.template_name, sum(m.attempts_est)::int as attempts_est, sum(m.measured_attempts)::int as measured_attempts, sum(m.unmeasured_sends)::int as unmeasured_sends,
+        sum(least(m.delivered_adj, m.measured_attempts))::int as delivered_adj, sum(least(m.read_adj, m.measured_attempts))::int as read_adj, sum(least(m.replied, m.measured_attempts))::int as replied, sum(m.failed)::int as failed,
+        ${TS('min(m.first_sent_at_ist)')} as first_sent, ${TS('max(m.last_event_at_ist)')} as last_event
+      from ${MSG} m where m.phone10 = $1 group by m.template_name order by min(m.first_sent_at_ist) desc`, [phone10]) : []
     const sessions = phone10 ? await Q(`select ${TS('last_user_message_time at time zone \'Asia/Kolkata\'')} as last_customer_message, ${TS('session_expiry_time at time zone \'Asia/Kolkata\'')} as window_closes from public.wati_sessions where reporting.phone10(phone_number) = $1 order by last_user_message_time desc`, [phone10]) : []
     const chat = phone10 ? await Q(`select ${TS('message_created_at at time zone \'Asia/Kolkata\'')} as at, message_type, is_owner, operator_email, message_text from public.wati_message_log where reporting.phone10(wa_id) = $1 order by message_created_at desc limit 40`, [phone10]) : []
 

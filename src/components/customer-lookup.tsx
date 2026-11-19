@@ -121,7 +121,7 @@ export function CustomerLookup({ title, badge }: { title: string; badge?: (updat
 
               {d.messages.length > 0 && (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-                  <KpiCard label="Messages followed" value={num(d.totals.measured)} sub={`of ${num(d.totals.attempts)} sent (repeat sends are not followed)`} />
+                  <KpiCard label="Messages followed" value={num(d.totals.measured)} sub={d.totals.unmeasured ? `of ${num(d.totals.attempts)} sent (older repeat sends are not followed)` : `all ${num(d.totals.attempts)} sent`} />
                   <KpiCard label="Delivered" value={pct(d.totals.measured ? (100 * d.totals.delivered) / d.totals.measured : null)} sub={`${num(d.totals.delivered)} of ${num(d.totals.measured)} followed`} />
                   <KpiCard label="Read" value={pct(d.totals.measured ? (100 * d.totals.read) / d.totals.measured : null)} sub={`${num(d.totals.read)} of ${num(d.totals.measured)} followed`} />
                   <KpiCard label="Replied" value={pct(d.totals.measured ? (100 * d.totals.replied) / d.totals.measured : null)} tone={d.totals.replied > 0 ? "good" : undefined} sub={`${num(d.totals.replied)} of ${num(d.totals.measured)} followed`} />

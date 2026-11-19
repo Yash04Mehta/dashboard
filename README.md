@@ -8,7 +8,7 @@ Double-click **`start.bat`**. After about 15 seconds your browser opens at http:
 (First time only it installs packages and builds the app. Needs Node 22 or newer.)
 
 ## Hosting on Cloudflare (aquant.fiaxe.in)
-The live site runs as a Cloudflare Worker: `wrangler.jsonc` serves the built web app and `worker/index.mjs` runs the same API for `/api/*`. Deploy with `npm run build` then `npx wrangler deploy`.
+The live site runs as a Cloudflare Worker: `wrangler.jsonc` serves the built web app and `worker/index.mjs` runs the same API for `/api/*`. Deploy with `npm run build` then `npx wrangler deploy`. Run any new file in `server/sql/` on the database before deploying code that reads it.
 
 Settings are Worker secrets (`npx wrangler secret put NAME`), never files in the repo:
 
@@ -61,6 +61,7 @@ When a date range is chosen, each rate is compared with the same number of days 
 
 **Connecting the live database.** Then every page reads the real data and the header badge says "Live database".
 1. Someone with database admin rights runs, in this order, `server/sql/reporting_views.sql` then `server/sql/app.sql`. They create read-only views in a new schema called `reporting`; no table is changed.
+   Then `server/sql/message_sends.sql` (one row per message sent, so the message numbers match WATI; needs `public.wati_messages`). Until it is run the server falls back to the old first-send view (`AQ_MESSAGES=pivot` forces the old view).
 2. Create a read-only login:
    ```sql
    create role dashboard_ro login password '<choose-a-strong-password>';
