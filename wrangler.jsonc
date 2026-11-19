@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aquant-insight",
+  "account_id": "bc179c6141c15f2b2f69a8615300724b",
+  "main": "worker/index.mjs",
+  "base_dir": ".",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "find_additional_modules": true,
+  "rules": [
+    { "type": "Text", "globs": ["config/*.csv", "config/*.json"] },
+    { "type": "CompiledWasm", "globs": ["__none__"] },
+    { "type": "Data", "globs": ["__none__"] }
+  ],
+  "assets": {
+    "directory": "dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "routes": [{ "pattern": "aquant.fiaxe.in", "custom_domain": true }],
+  "define": { "import.meta.url": "\"file:///bundle/server/index.mjs\"" },
+  "placement": { "mode": "smart" },
+  "observability": { "enabled": true }
+}

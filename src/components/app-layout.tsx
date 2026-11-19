@@ -8,7 +8,7 @@ import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupConte
 import { Skeleton } from "@/components/ui/skeleton"
 import { RefreshButton } from "@/components/refresh"
 import { ExportReportButton } from "@/components/export-report"
-import { useAuth } from "@/lib/auth"
+import { ChangePasswordButton, useAuth } from "@/lib/auth"
 import { useFilters } from "@/lib/filters"
 import { day } from "@/lib/format"
 
@@ -103,7 +103,7 @@ export function AppLayout() {
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-5" />
           <span className="min-w-0 truncate text-sm font-medium">{current.title}</span>
-          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle />{hasLogin && <Button variant="ghost" size="sm" onClick={logout} aria-label="Log out" title="Log out"><LogOut className="size-4" /><span className="hidden sm:inline">Log out</span></Button>}</div>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1"><ExportReportButton /><RefreshButton /><ThemeToggle />{hasLogin && <ChangePasswordButton />}{hasLogin && <Button variant="ghost" size="sm" onClick={logout} aria-label="Log out" title="Log out"><LogOut className="size-4" /><span className="hidden sm:inline">Log out</span></Button>}</div>
         </header>
         <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-5 p-3 sm:gap-6 sm:p-4 md:p-6">
           {metaError ? (

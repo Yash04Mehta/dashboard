@@ -7,6 +7,19 @@ Built with React, **shadcn/ui** (Tailwind), Recharts and a small local server. I
 Double-click **`start.bat`**. After about 15 seconds your browser opens at http://localhost:8787. Close the window, or run `stop.bat`, to stop it.
 (First time only it installs packages and builds the app. Needs Node 22 or newer.)
 
+## Hosting on Cloudflare (aquant.fiaxe.in)
+The live site runs as a Cloudflare Worker: `wrangler.jsonc` serves the built web app and `worker/index.mjs` runs the same API for `/api/*`. Deploy with `npm run build` then `npx wrangler deploy`.
+
+Settings are Worker secrets (`npx wrangler secret put NAME`), never files in the repo:
+
+| Secret | What it is |
+|---|---|
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSL` | the read-only `dashboard_ro` database login |
+| `AUTH_PGUSER`, `AUTH_PGPASSWORD` | the `aquant_login` database login, which can only read logins and change passwords |
+| `SESSION_SECRET` | random text, 32+ characters, signs the login cookie |
+
+**Logins** are kept in the database table `dashboard_auth.users` (user name + password hash), not in files. Users change their own password with the **Password** button in the top bar. The site cannot add or remove accounts; that is done by hand in the database. Run on your own computer without `AUTH_PGUSER`, the app falls back to `DEMO_USER` / `DEMO_PASS`.
+
 ## Hosting on Netlify
 The dashboard can also run as a website on Netlify: Netlify serves the built web app and runs the API as a Netlify Function (`netlify.toml`, `netlify/functions/api.mjs`). Connect the GitHub repo to a Netlify site (no build settings to type, they are in `netlify.toml`), then add these under **Site configuration > Environment variables** and deploy again:
 
@@ -60,7 +73,7 @@ When a date range is chosen, each rate is compared with the same number of days 
    grant select on public.wati_message_log, public.wati_sessions to dashboard_ro;
    ```
    Re-run the `grant select` line after re-running the SQL files, because the views are recreated.
-3. Copy `.env.example` to `.env`, set `DATABASE_URL`, and restart. Do not share the file. For Supabase, use the "Session pooler" address from Project, Connect (the plain address only works over IPv6).
+3. Create a `.env` file with `DATABASE_URL` (or `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`), and restart. Do not share the file. For Supabase, use the "Session pooler" address from Project, Connect (the plain address only works over IPv6).
 4. Run `node server/check_live.mjs`. It connects read-only and tells you in plain words what is missing (views, grants, an old feed). Fix anything marked FIX, then start the dashboard with `start.bat`.
 5. Open **Overview** or **Messages** in the sidebar. The badge at the top right says "Live" with the time of the last refresh, and the numbers refresh by themselves every minute. In snapshot mode the same badge says "Snapshot" and nothing refreshes.
 
@@ -87,5 +100,6 @@ With the server running, `npm test` runs 61 checks against the API. The expected
 ```
 server/      index.mjs (web server), db.mjs (CSV or live), queries.mjs (every number), sql/ (the views), test_api.mjs
 src/         pages/ (the five pages), components/ (shadcn/ui and shared pieces), lib/ (data, filters, formatting)
-start.bat    stop.bat    .env.example
+worker/      index.mjs (Cloudflare Worker entry)    wrangler.jsonc (Cloudflare settings)
+start.bat    stop.bat
 ```

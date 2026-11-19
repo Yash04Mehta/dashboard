@@ -9,6 +9,7 @@ import { makeApi } from './queries.mjs'
 import { makeReport } from './report.mjs'
 import { htmlToPdf } from './pdf.mjs'
 import { configStamp } from './costs.mjs'
+import { authInDb, getUser, setPassword, checkPassword, stampOf } from './auth.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 try { process.loadEnvFile(path.resolve(here, '..', '.env')) } catch { /* no .env file: CSV mode with defaults */ }
@@ -17,6 +18,8 @@ const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '127.0.0.1'
 // Netlify Function mode (set by netlify/functions/api.mjs): no port, no static files (Netlify serves dist/), no warm-up timers, and the app is exported instead of listening.
 const SERVERLESS = process.env.AQ_SERVERLESS === '1'
+// Cloudflare Worker: work started by one request cannot be awaited by another, so no shared in-flight answers and no background refreshes.
+const WORKER = process.env.AQ_WORKER === '1'
 // the caller's address, for the "10 wrong tries" lock. On Netlify only the header Netlify itself sets can be trusted (the others can be typed by anyone).
 const clientIp = (req) => String((SERVERLESS ? req.headers['x-nf-client-connection-ip'] : req.headers['cf-connecting-ip']) || req.socket.remoteAddress || '')
 
@@ -58,12 +61,12 @@ if (DASH_PASSWORD) {
   })
 }
 
-// ---- Demo login (admin / pass@123 unless DEMO_USER / DEMO_PASS are set) ----
-// POST /api/login checks the two values and sets a SIGNED session cookie (HttpOnly). It lasts 8 hours, or 30 days when "Remember me" is ticked. The cookie carries its own
-// expiry and a signature, so nothing is kept in memory and a server restart does not log anyone out. The signing key is SESSION_SECRET, or a random one saved in server/.session_secret
-// (never commit that file). It also depends on the user name and password, so changing DEMO_PASS logs everyone out.
-// Every other /api route then needs that cookie. The web app itself (the page and its scripts) is public so the login screen can load; it holds no data.
-// This is a demo gate, not real user management: one shared account, and the defaults are written in the code. Set DEMO_PASS before sharing a link.
+// ---- Login ----
+// Accounts live in the database (server/auth.mjs: table dashboard_auth.users). Without a database login for it (running on your own computer) one account comes from
+// DEMO_USER / DEMO_PASS (admin / pass@123 by default).
+// POST /api/login checks the user name and password and sets a SIGNED session cookie (HttpOnly) that names the user. It lasts 8 hours, or 30 days when "Remember me" is ticked.
+// The cookie also carries a fingerprint of the stored password, so changing a password (POST /api/password) ends that user's other sessions within 5 minutes.
+// Every other /api route needs that cookie. The web app itself (the page and its scripts) is public so the login screen can load; it holds no data.
 const DEMO_USER = process.env.DEMO_USER || 'admin'
 const DEMO_PASS = process.env.DEMO_PASS || 'pass@123'
 const SESSION_MS = 8 * 3600 * 1000, REMEMBER_MS = 30 * 24 * 3600 * 1000
@@ -75,42 +78,94 @@ const sessionSecret = (() => {
   try { fs.writeFileSync(secretFile, v, { mode: 0o600 }) } catch { /* read-only folder: sessions then last until the next restart */ }
   return v
 })()
-const signKey = crypto.createHmac('sha256', sessionSecret).update(DEMO_USER + ':' + DEMO_PASS).digest()
+const signKey = crypto.createHmac('sha256', sessionSecret).update(authInDb() ? 'db-logins-v1' : DEMO_USER + ':' + DEMO_PASS).digest()
 const sign = (body) => crypto.createHmac('sha256', signKey).update(body).digest('hex')
-const makeToken = (ms) => { const body = Date.now() + ms + '.' + crypto.randomBytes(12).toString('hex'); return body + '.' + sign(body) }
+const b64u = (s) => Buffer.from(s, 'utf8').toString('base64url')
+const makeToken = (ms, user, stamp) => { const body = [Date.now() + ms, b64u(user), stamp, crypto.randomBytes(12).toString('hex')].join('.'); return body + '.' + sign(body) }
 const revoked = new Set()    // tokens signed out since this server started (a restart forgets them; they still end at their own expiry)
 const loginFails = new Map() // ip -> { n, until }: 10 wrong tries lock that address for 10 minutes
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest()
 const same = (a, b) => crypto.timingSafeEqual(sha256(a), sha256(b))
 const cookieOf = (req, name) => { for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim()) } return '' }
-const loggedIn = (req) => {
+/** the session in the cookie ({ user, stamp }) when it is signed by us and not expired, else null */
+const sessionOf = (req) => {
   const t = cookieOf(req, 'aq_session'), p = t.split('.')
-  if (p.length !== 3 || revoked.has(t) || !/^[0-9a-f]+$/.test(p[2])) return false
-  const want = sign(p[0] + '.' + p[1])
-  if (want.length !== p[2].length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(p[2]))) return false
-  return Number(p[0]) > Date.now()
+  if (p.length !== 5 || revoked.has(t) || !/^[0-9a-f]+$/.test(p[4])) return null
+  const want = sign(p.slice(0, 4).join('.'))
+  if (want.length !== p[4].length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(p[4]))) return null
+  if (!(Number(p[0]) > Date.now())) return null
+  return { user: Buffer.from(p[1], 'base64url').toString('utf8'), stamp: p[2] }
+}
+// password fingerprints from the database, re-read at most every 5 minutes per user (each request reads for itself: nothing is shared between requests)
+const stamps = new Map()     // user -> { at, stamp }
+const loggedIn = async (req) => {
+  const s = sessionOf(req)
+  if (!s) return null
+  if (!authInDb()) return s.user === DEMO_USER ? s : null
+  let c = stamps.get(s.user)
+  if (!c || Date.now() - c.at > 5 * 60_000) { const u = await getUser(s.user); c = { at: Date.now(), stamp: u ? stampOf(u.password_hash) : null }; stamps.set(s.user, c) }
+  return c.stamp && c.stamp === s.stamp ? s : null
+}
+/** the account for these two values, or null */
+const checkLogin = async (username, password) => {
+  if (!authInDb()) return same(username, DEMO_USER) && same(password, DEMO_PASS) ? { user: DEMO_USER, stamp: 'local' } : null
+  const u = await getUser(username)
+  if (!u || !checkPassword(password, u.password_hash)) return null
+  const stamp = stampOf(u.password_hash)
+  stamps.set(u.username, { at: Date.now(), stamp })
+  return { user: u.username, stamp }
 }
 const isSecure = (req) => req.headers['x-forwarded-proto'] === 'https'
 const setCookie = (req, res, v, maxAge) => res.setHeader('Set-Cookie', `aq_session=${v}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${isSecure(req) ? '; Secure' : ''}`)
+const tooMany = (ip) => { const f = loginFails.get(ip); return f && f.n >= 10 && Date.now() < f.until }
+const failed = (ip) => { const f = loginFails.get(ip); loginFails.set(ip, { n: (f && Date.now() < f.until ? f.n : 0) + 1, until: Date.now() + 600000 }) }
 
-app.get('/api/session', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ authenticated: loggedIn(req) }) })
-app.post('/api/login', express.json({ limit: '2kb' }), (req, res) => {
+app.get('/api/session', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  try { const s = await loggedIn(req); res.json({ authenticated: !!s, user: s?.user ?? null, canChangePassword: authInDb() }) }
+  catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.post('/api/login', express.json({ limit: '2kb' }), async (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   const ip = clientIp(req)
-  const f = loginFails.get(ip)
-  if (f && f.n >= 10 && Date.now() < f.until) return res.status(429).json({ error: 'Too many wrong tries. Please wait 10 minutes.' })
+  if (tooMany(ip)) return res.status(429).json({ error: 'Too many wrong tries. Please wait 10 minutes.' })
   const { username, password, remember } = req.body || {}
-  if (typeof username === 'string' && typeof password === 'string' && same(username, DEMO_USER) && same(password, DEMO_PASS)) {
+  try {
+    const s = typeof username === 'string' && typeof password === 'string' && username.length <= 200 && password.length <= 200 ? await checkLogin(username, password) : null
+    if (!s) { failed(ip); return res.status(401).json({ error: 'Wrong user name or password.' }) }
     loginFails.delete(ip)
     const ms = remember === true ? REMEMBER_MS : SESSION_MS
-    setCookie(req, res, makeToken(ms), ms / 1000)
-    return res.json({ authenticated: true })
-  }
-  loginFails.set(ip, { n: (f && Date.now() < f.until ? f.n : 0) + 1, until: Date.now() + 600000 })
-  res.status(401).json({ error: 'Wrong user name or password.' })
+    setCookie(req, res, makeToken(ms, s.user, s.stamp), ms / 1000)
+    res.json({ authenticated: true, user: s.user })
+  } catch (e) { console.error('[login]', e.message); res.status(500).json({ error: 'Login is not available right now. Please try again.' }) }
 })
 app.post('/api/logout', (req, res) => { revoked.add(cookieOf(req, 'aq_session')); setCookie(req, res, '', 0); res.json({ authenticated: false }) })
-app.use('/api', (req, res, next) => { if (loggedIn(req)) return next(); res.setHeader('Cache-Control', 'no-store'); res.status(401).json({ error: 'Please log in first.' }) })
+app.use('/api', async (req, res, next) => {
+  try { const s = await loggedIn(req); if (s) { req.aqUser = s.user; return next() } } catch (e) { console.error('[session]', e.message); return res.status(500).json({ error: 'Login check failed. Please try again.' }) }
+  res.setHeader('Cache-Control', 'no-store'); res.status(401).json({ error: 'Please log in first.' })
+})
+// Change your own password: needs the current one. Accounts are never created or removed here.
+app.post('/api/password', express.json({ limit: '2kb' }), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  if (!authInDb()) return res.status(400).json({ error: 'Passwords can only be changed on the hosted site.' })
+  const ip = clientIp(req)
+  if (tooMany(ip)) return res.status(429).json({ error: 'Too many wrong tries. Please wait 10 minutes.' })
+  const { current, next } = req.body || {}
+  if (typeof current !== 'string' || typeof next !== 'string') return res.status(400).json({ error: 'Fill in both passwords.' })
+  if (next.length < 8 || next.length > 200) return res.status(400).json({ error: 'The new password needs at least 8 characters.' })
+  if (next === current) return res.status(400).json({ error: 'The new password is the same as the current one.' })
+  try {
+    if (!(await checkLogin(req.aqUser, current))) { failed(ip); return res.status(401).json({ error: 'The current password is wrong.' }) }
+    await setPassword(req.aqUser, next)
+    const u = await getUser(req.aqUser), stamp = stampOf(u.password_hash)
+    stamps.set(req.aqUser, { at: Date.now(), stamp })
+    const old = cookieOf(req, 'aq_session')
+    revoked.add(old)
+    const left = Math.max(60, Math.round((Number(old.split('.')[0]) - Date.now()) / 1000))
+    setCookie(req, res, makeToken(left * 1000, req.aqUser, stamp), left)   // this browser stays logged in; the user's other sessions end
+    res.json({ ok: true })
+  } catch (e) { console.error('[password]', e.message); res.status(500).json({ error: 'Could not change the password. Please try again.' }) }
+})
 
 // Report as a PDF. The page sends the report HTML it just built (totals only); this answers with the PDF. The custom header makes other websites unable to call it.
 app.post('/api/report/pdf', express.text({ type: 'text/html', limit: '8mb' }), async (req, res) => {
@@ -144,7 +199,7 @@ const keyOf = (name, query) => {
   return `${name}?${p}${pricey ? '#' + configStamp() : ''}`
 }
 const compute = (key, name, handler, query) => {
-  if (inflight.has(key)) return inflight.get(key)
+  if (!WORKER && inflight.has(key)) return inflight.get(key)
   const t0 = performance.now()
   const p = (async () => handler(query))().then((body) => {
     if (process.env.TIMING === '1') console.log(`[timing] ${key.slice(0, 150)} ${Math.round(performance.now() - t0)} ms`)
@@ -152,7 +207,7 @@ const compute = (key, name, handler, query) => {
     cache.set(key, { at: Date.now(), body })
     return body
   }).finally(() => inflight.delete(key))
-  inflight.set(key, p)
+  if (!WORKER) inflight.set(key, p)
   return p
 }
 app.use('/api', async (req, res) => {
@@ -166,7 +221,7 @@ app.use('/api', async (req, res) => {
     const hit = cache.get(key), age = hit ? Date.now() - hit.at : Infinity
     const bypass = req.query._ !== undefined   // the Refresh button: wait for fresh numbers
     if (hit && !bypass && age < ctx.cacheMs) return res.json(hit.body)
-    if (hit && !bypass && age < STALE_MS) { compute(key, name, handler, req.query).catch((e) => console.error(`[${name}] background refresh:`, e.message)); return res.json(hit.body) }
+    if (!WORKER && hit && !bypass && age < STALE_MS) { compute(key, name, handler, req.query).catch((e) => console.error(`[${name}] background refresh:`, e.message)); return res.json(hit.body) }
     res.json(await compute(key, name, handler, req.query))
   } catch (e) {
     console.error(`[${name}]`, e.message)

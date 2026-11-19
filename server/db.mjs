@@ -39,6 +39,17 @@ export async function connect() {
     //  - READ ONLY is a setting of the connection itself (sent when it opens: default_transaction_read_only) instead of wrapping every query in begin ... commit,
     //    which cost 3 round trips per query instead of 1. The database still refuses every write. This is proved below before the server starts answering,
     //    and the login itself (dashboard_ro) can only read anyway.
+    if (process.env.AQ_WORKER === '1') {
+      // Cloudflare Worker: a connection cannot be shared between requests, so each query opens its own.
+      const query = async (sql, args = []) => {
+        const c = new pg.Client({ ...liveConfig(), ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false } })
+        await c.connect()
+        try { await c.query('begin read only'); const r = await c.query(sql, args); await c.query('commit'); return r.rows }
+        finally { c.end().catch(() => {}) }
+      }
+      // No queries here: a Worker request must never wait on work another request started. The database clock is UTC, so "today" is worked out locally.
+      return { mode: 'live', query, MSG: 'reporting.v_message_rows', get asOf() { return new Date().toISOString().slice(0, 10) }, cacheMs: 60_000 }
+    }
     const pool = new pg.Pool({
       ...liveConfig(),
       ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
