@@ -19,7 +19,7 @@ function Page() {
     <div className="flex flex-col gap-6">
       <PageHeader title="Overview" description="Chats, leads and WhatsApp messages in one place. Each number shows the count and the percentage." actions={<LiveBadge updatedAt={stamp.updatedAt} />} />
       <FilterBar kinds={["templates", "sources", "owners"]} />
-      <p className="-mt-3 text-xs text-muted-foreground">Picking a template changes the message numbers only. Chats and leads do not depend on the template, and chats follow the date range only.</p>
+      <p className="-mt-3 text-xs text-muted-foreground">Picking a template changes the message numbers only. Chats and leads do not depend on the template. The chat tiles follow the date range; the "Right now" tiles also follow Owner and Lead source.</p>
       <ErrorNote message={stamp.error} />
 
       <ConversationDetails params={params} />

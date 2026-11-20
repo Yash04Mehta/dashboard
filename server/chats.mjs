@@ -287,6 +287,20 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
   const watiMissing = (e) => /v_wati_conversations/.test(e.message) && /(does not exist|permission denied)/.test(e.message)
 
   const WOWN = { 'coalesce(c.assignee_name, c.assignee_id)': 'owners' }   // the Agent filter on WATI's own rows
+
+  // The "Right now" tiles and lists follow the page's filters: the date range, the Agent filter (owners) and the Lead source filter (sources). The Template and Status filters do
+  // not apply to chats. Lead source: the customer behind a conversation is found by phone number (from the messages we saved for it) and gets the source of the newest lead with
+  // that number, or "(no matching lead)". That lookup is only built when the Lead source filter is used. The date is d (the day the customer last wrote) or xd (the day it expired).
+  const WATI_ALL = `(select *, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations) c`
+  const SRC_JOIN = `left join (select m.conversation_id, (array_agg(l.lead_source order by l.created_at desc nulls last))[1] as lead_source
+      from (select conversation_id, (array_agg(phone10 order by at_utc desc) filter (where coalesce(phone10, '') <> ''))[1] as phone10 from reporting.v_chat_messages where conversation_id is not null group by 1) m
+      join reporting.v_leads l on l.phone10 = m.phone10 group by 1) ls on ls.conversation_id = c.conversation_id`
+  const rnWhere = (q, dateCol, extra = []) => {
+    const bySource = String(q.sources ?? '').trim() !== ''
+    const w = where(q, { date: dateCol, extra, lists: { ...WOWN, ...(bySource ? { "coalesce(ls.lead_source, '(no matching lead)')": 'sources' } : {}) } })
+    return { ...w, from: `${WATI_ALL}${bySource ? ' ' + SRC_JOIN : ''}` }
+  }
+
   async function watiStatus(q) {
     try {
       const w = where(q, { date: 'c.d', lists: WOWN })
@@ -303,15 +317,20 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
         from ${WATI} ${w.sql}`, w.args)
       const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'"] })
       const [x] = await Q(`select count(*)::int as expired, count(*) filter (where c.assignment = 'assigned' and c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql}`, wx.args)
-      // "Right now": WATI's own status of every conversation as last saved, ignoring the dates (only the Agent filter applies). Open, Pending and Expired are the
-      // Team Inbox filters of the same name. Unassigned counts every conversation with no owner, including the ones we only sent a template to (WATI status
-      // "broadcast"); unassigned_customer leaves those out. Both are returned so either can be compared with the Team Inbox.
-      const wr = where(q, { date: null, lists: WOWN })
+      // "Right now": WATI's own status as last saved, for the page's filters (see rnWhere). With nothing picked (All time, no agent, no source) these are the whole Team Inbox, so Open,
+      // Pending and Expired can be compared with the Team Inbox filters of the same name. Open, Pending and Unassigned follow the day the customer last wrote; Expired follows the day the
+      // chat expired (like the Expired tile above). Unassigned counts every conversation with no owner, including the ones we only sent a template to (WATI status "broadcast");
+      // unassigned_customer leaves those out. Both are returned so either can be compared with the Team Inbox.
+      const wr = rnWhere(q, 'c.d')
       const [rn] = await Q(`select count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending,
-          count(*) filter (where c.status = 'expired')::int as expired, count(*) filter (where c.assignment = 'unassigned')::int as unassigned,
+          count(*) filter (where c.assignment = 'unassigned')::int as unassigned,
           count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast')::int as unassigned_customer
-        from reporting.v_wati_conversations c ${wr.sql}`, wr.args)
-      return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending }, right_now: { ...rn, as_of: live.evaluated_at }, period: { ...p, expired: x.expired, missed: x.missed } }
+        from ${wr.from} ${wr.sql}`, wr.args)
+      const wrx = rnWhere(q, 'c.xd', ["c.status = 'expired'"])
+      const [rx] = await Q(`select count(*)::int as expired from ${wrx.from} ${wrx.sql}`, wrx.args)
+      return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending },
+        right_now: { open: rn.open, pending: rn.pending, expired: rx.expired, unassigned: rn.unassigned, unassigned_customer: rn.unassigned_customer, as_of: live.evaluated_at },
+        period: { ...p, expired: x.expired, missed: x.missed } }
     } catch (e) { if (watiMissing(e)) return { available: false }; throw e }
   }
 
@@ -324,11 +343,11 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
     try {
       const show = reveal(q)
       const limit = Math.min(1000, Math.max(1, parseInt(q.limit, 10) || 200))
-      const w = where(q, { date: null, lists: WOWN, extra: [WSTATES[state]] })
-      const [{ n: total }] = await Q(`select count(*)::int as n from reporting.v_wati_conversations c ${w.sql}`, w.args)
+      const w = rnWhere(q, state === 'expired' ? 'c.xd' : 'c.d', [WSTATES[state]])   // the same filters as the tile it belongs to
+      const [{ n: total }] = await Q(`select count(*)::int as n from ${w.from} ${w.sql}`, w.args)
       const rows = await Q(`select c.conversation_id, c.status, c.assignment, coalesce(c.assignee_name, c.assignee_id) as owner, coalesce(c.assignee_is_bot, false) as owner_is_bot,
           c.reply_state, ${TS("(c.last_customer_message_at at time zone 'Asia/Kolkata')")} as last_wrote
-        from reporting.v_wati_conversations c ${w.sql} order by c.last_customer_message_at desc nulls last, c.conversation_id limit ${limit}`, w.args)
+        from ${w.from} ${w.sql} order by c.last_customer_message_at desc nulls last, c.conversation_id limit ${limit}`, w.args)
       const who = new Map()
       if (rows.length) {
         try {

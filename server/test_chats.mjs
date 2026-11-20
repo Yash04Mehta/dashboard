@@ -284,7 +284,14 @@ const rn = await a7['chats/wati-status']({})
 eq('right now: Open 2 (c8, c10), Pending 2 (c1, c2), Expired 4 (c5, c6, c7, c12), Unassigned 3 (c7, c8, and the broadcast c13), 2 without the broadcast',
   rnOf(rn), { open: 2, pending: 2, expired: 4, unassigned: 3, unassigned_customer: 2 })
 eq('right now: it says when WATI\'s status was saved', typeof rn.right_now.as_of === 'string' && rn.right_now.as_of.length >= 16, true)
-eq('right now: the date range does not change it (it is the inbox as it is now)', rnOf(await a7['chats/wati-status']({ from: ist2, to: ist2 })), rnOf(rn))
+const WIDE = { from: '2000-01-01', to: '2100-01-01' }
+eq('right now: a date range that covers everything shows the whole inbox', rnOf(await a7['chats/wati-status'](WIDE)), rnOf(rn))
+eq('right now: it follows the date range: on the day c9 and c12 were last written there is nothing open, pending or unassigned', rnOf(await a7['chats/wati-status']({ from: ist2, to: ist2 })),
+  { open: 0, pending: 0, expired: 0, unassigned: 0, unassigned_customer: 0 })
+// c7 (unassigned, expired) last wrote 40 h ago: it shares that India day with "48 h ago" only at some times of day, so the expected figure is worked out from the clock
+const istOfH = (h) => new Date(Date.now() - h * 3600000 + 5.5 * 3600000).toISOString().slice(0, 10), c7Today = istOfH(40) === istExp ? 1 : 0
+eq('right now: Expired follows the day the chat expired (c12 expired 48 h ago), the others follow the day the customer last wrote (c7 only if it last wrote that day)', rnOf(await a7['chats/wati-status']({ from: istExp, to: istExp })),
+  { open: 0, pending: 0, expired: 1, unassigned: c7Today, unassigned_customer: c7Today })
 eq('right now: the existing Open and Pending figures are unchanged', rn.live, { open: 2, pending: 2 })
 eq('right now: the Agent filter applies (Priya Nair: 1 open, 2 pending, 3 expired, and nothing is unassigned to her)', rnOf(await a7['chats/wati-status']({ owners: 'Priya Nair' })),
   { open: 1, pending: 2, expired: 3, unassigned: 0, unassigned_customer: 0 })
@@ -304,6 +311,29 @@ eq('list: a chat with no saved messages has no phone and an honest name', [ex5.c
 eq('list: the Agent filter applies', (await keysOf('expired', { owners: 'Priya Nair' })).rows.map((r) => r.key).sort(), ['c12', 'c5', 'c6'])
 eq('list: the limit applies but the total stays', [(await keysOf('expired', { limit: 2 })).rows.length, (await keysOf('expired', { limit: 2 })).total], [2, 4])
 eq('list: an unknown state is refused, not run', [(await keysOf('solved')).rows, (await keysOf("open' or '1'='1")).state], [[], null])
+
+// ---- 9. the same tiles and lists follow the page's Lead source filter (matched by phone number) and the date range
+// Phones come from the messages saved for a conversation: c7 = Chitra (9800000003), c3 = Bhavin (9800000002), c2 = 9800000004. Every other conversation has no saved message.
+await db.exec(`alter table public.lead_insight add column lead_source text;
+  create or replace view reporting.v_leads as select lead_id, customer_name, reporting.phone10(customer_number) as phone10, created_at, coalesce(nullif(lead_source, ''), '(none)') as lead_source from public.lead_insight;
+  insert into public.lead_insight values ('l10', 'Chitra Lead', '9800000003', '2026-08-01', 'Website'), ('l11', 'Bhavin Lead', '9800000002', '2026-08-01', 'Instagram'),
+    ('l12', 'Older Chitra', '9800000003', '2026-01-01', 'Referral')`)   // l12 is older than l10: the newest lead with that phone number decides
+const a9 = api(db)
+eq('source filter: Website = only c7 (Chitra: expired and unassigned)', rnOf(await a9['chats/wati-status']({ sources: 'Website' })), { open: 0, pending: 0, expired: 1, unassigned: 1, unassigned_customer: 1 })
+eq('source filter: the newest lead with the phone number decides (not the older Referral)', rnOf(await a9['chats/wati-status']({ sources: 'Referral' })), { open: 0, pending: 0, expired: 0, unassigned: 0, unassigned_customer: 0 })
+eq('source filter: two sources add up (Website c7 + Instagram c3, which is solved)', rnOf(await a9['chats/wati-status']({ sources: 'Website|Instagram' })), { open: 0, pending: 0, expired: 1, unassigned: 1, unassigned_customer: 1 })
+eq('source filter: "(no matching lead)" = every conversation without a lead (all but c7, c3 and c2)', rnOf(await a9['chats/wati-status']({ sources: '(no matching lead)' })),
+  { open: 2, pending: 1, expired: 3, unassigned: 2, unassigned_customer: 1 })
+eq('source filter: it combines with the Agent filter (Priya Nair, no lead: her 3 expired chats)', rnOf(await a9['chats/wati-status']({ sources: '(no matching lead)', owners: 'Priya Nair' })),
+  { open: 1, pending: 1, expired: 3, unassigned: 0, unassigned_customer: 0 })
+eq('source filter: with no source picked nothing changes', rnOf(await a9['chats/wati-status']({})), rnOf(rn))
+eq('source filter: the list follows it (expired + Website = c7)', (await a9['chats/wati-list']({ state: 'expired', sources: 'Website' })).rows.map((r) => r.key), ['c7'])
+eq('source filter: the list follows it (expired + no lead = c12, c5, c6)', (await a9['chats/wati-list']({ state: 'expired', sources: '(no matching lead)' })).rows.map((r) => r.key).sort(), ['c12', 'c5', 'c6'])
+eq('source filter: the list total matches the tile', (await a9['chats/wati-list']({ state: 'expired', sources: '(no matching lead)' })).total, 3)
+eq('date filter: the Expired list follows the day the chat expired (c12 only)', (await a9['chats/wati-list']({ state: 'expired', from: istExp, to: istExp })).rows.map((r) => r.key), ['c12'])
+eq('date filter: the Open list on a day with nothing open is empty, with a total of 0', [(await a9['chats/wati-list']({ state: 'open', from: ist2, to: ist2 })).rows.length, (await a9['chats/wati-list']({ state: 'open', from: ist2, to: ist2 })).total], [0, 0])
+eq('date filter: a covering range gives the whole list', (await a9['chats/wati-list']({ state: 'open', ...WIDE })).rows.map((r) => r.key).sort(), ['c10', 'c8'])
+eq('the other numbers on the page are not affected by the new filters', [(await a9['chats/wati-status']({ sources: 'Website' })).live, (await a9['chats/wati-status']({ sources: 'Website' })).period.total], [(await a9['chats/wati-status']({})).live, (await a9['chats/wati-status']({})).period.total])
 
 await db.close()
 console.log(`\n${pass} passed, ${fail} failed`)
