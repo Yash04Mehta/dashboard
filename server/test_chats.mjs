@@ -276,6 +276,35 @@ eq('expiry day: the chat that expired 48 h ago counts as Expired and Missed on t
 if (istWrote !== istExp) eq('expiry day: it does not count as Expired on the day the customer wrote', (await a7['chats/wati-status']({ from: istWrote, to: istWrote })).period.expired, 0)
 eq('expiry day: Priya\'s Expired and Missed on that day are 1 and 1', (await a7['chats/wati-operators']({ from: istExp, to: istExp })).rows.find((r) => r.operator === 'Priya Nair'), { operator: 'Priya Nair', is_bot: false, assigned: 0, solved: 0, expired: 1, missed: 1, open: 1, pending: 2 })
 
+// ---- 8. "Right now" (the Team Inbox filters) and the chats behind each number
+// Now: c1 pending, c2 pending, c3/c4/c9 solved, c5/c6/c7/c12 expired, c8/c10 open, c11 broadcast (owned). c13 is a broadcast nobody owns (we messaged, they never wrote).
+await sync([conv('c13', 'broadcast', null, { h: 6 })])
+const rnOf = (s) => { const { as_of, ...rest } = s.right_now; return rest }
+const rn = await a7['chats/wati-status']({})
+eq('right now: Open 2 (c8, c10), Pending 2 (c1, c2), Expired 4 (c5, c6, c7, c12), Unassigned 3 (c7, c8, and the broadcast c13), 2 without the broadcast',
+  rnOf(rn), { open: 2, pending: 2, expired: 4, unassigned: 3, unassigned_customer: 2 })
+eq('right now: it says when WATI\'s status was saved', typeof rn.right_now.as_of === 'string' && rn.right_now.as_of.length >= 16, true)
+eq('right now: the date range does not change it (it is the inbox as it is now)', rnOf(await a7['chats/wati-status']({ from: ist2, to: ist2 })), rnOf(rn))
+eq('right now: the existing Open and Pending figures are unchanged', rn.live, { open: 2, pending: 2 })
+eq('right now: the Agent filter applies (Priya Nair: 1 open, 2 pending, 3 expired, and nothing is unassigned to her)', rnOf(await a7['chats/wati-status']({ owners: 'Priya Nair' })),
+  { open: 1, pending: 2, expired: 3, unassigned: 0, unassigned_customer: 0 })
+const keysOf = async (state, extra = {}) => (await a7['chats/wati-list']({ state, ...extra }))
+eq('list: Open is c8 and c10', (await keysOf('open')).rows.map((r) => r.key).sort(), ['c10', 'c8'])
+eq('list: Pending is c1 and c2', (await keysOf('pending')).rows.map((r) => r.key).sort(), ['c1', 'c2'])
+eq('list: Expired is c12, c5, c6, c7', (await keysOf('expired')).rows.map((r) => r.key).sort(), ['c12', 'c5', 'c6', 'c7'])
+eq('list: Unassigned is c13, c7, c8 (it includes the broadcast nobody owns)', (await keysOf('unassigned')).rows.map((r) => r.key).sort(), ['c13', 'c7', 'c8'])
+for (const s of ['open', 'pending', 'expired', 'unassigned']) eq(`list: the ${s} list is as long as its tile`, (await keysOf(s)).total, { open: rn.right_now.open, pending: rn.right_now.pending, expired: rn.right_now.expired, unassigned: rn.right_now.unassigned }[s])
+const ex = (await keysOf('expired')).rows, ex5 = ex.find((r) => r.key === 'c5'), ex7 = ex.find((r) => r.key === 'c7')
+eq('list: an owned chat shows its owner, status and assignment', [ex5.owner, ex5.owner_is_bot, ex5.status, ex5.assignment], ['Priya Nair', false, 'expired', 'assigned'])
+eq('list: an unowned chat has no owner', [ex7.owner, ex7.assignment], [null, 'unassigned'])
+eq('list: the newest customer message comes first', (await keysOf('expired')).rows.map((r) => r.last_wrote), [...(await keysOf('expired')).rows.map((r) => r.last_wrote)].sort().reverse())
+eq('list: the customer name shows, the phone number is masked', [ex7.customer, ex7.phone, (await keysOf('expired')).revealed], ['Chitra', '•••••• 0003', false])
+eq('list: with reveal the phone number shows', ((await keysOf('expired', { reveal: '1' })).rows.find((r) => r.key === 'c7') ?? {}).phone, '9800000003')
+eq('list: a chat with no saved messages has no phone and an honest name', [ex5.customer, ex5.phone], ['Name unknown', ''])
+eq('list: the Agent filter applies', (await keysOf('expired', { owners: 'Priya Nair' })).rows.map((r) => r.key).sort(), ['c12', 'c5', 'c6'])
+eq('list: the limit applies but the total stays', [(await keysOf('expired', { limit: 2 })).rows.length, (await keysOf('expired', { limit: 2 })).total], [2, 4])
+eq('list: an unknown state is refused, not run', [(await keysOf('solved')).rows, (await keysOf("open' or '1'='1")).state], [[], null])
+
 await db.close()
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -303,8 +303,53 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
         from ${WATI} ${w.sql}`, w.args)
       const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'"] })
       const [x] = await Q(`select count(*)::int as expired, count(*) filter (where c.assignment = 'assigned' and c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql}`, wx.args)
-      return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending }, period: { ...p, expired: x.expired, missed: x.missed } }
+      // "Right now": WATI's own status of every conversation as last saved, ignoring the dates (only the Agent filter applies). Open, Pending and Expired are the
+      // Team Inbox filters of the same name. Unassigned counts every conversation with no owner, including the ones we only sent a template to (WATI status
+      // "broadcast"); unassigned_customer leaves those out. Both are returned so either can be compared with the Team Inbox.
+      const wr = where(q, { date: null, lists: WOWN })
+      const [rn] = await Q(`select count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending,
+          count(*) filter (where c.status = 'expired')::int as expired, count(*) filter (where c.assignment = 'unassigned')::int as unassigned,
+          count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast')::int as unassigned_customer
+        from reporting.v_wati_conversations c ${wr.sql}`, wr.args)
+      return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending }, right_now: { ...rn, as_of: live.evaluated_at }, period: { ...p, expired: x.expired, missed: x.missed } }
     } catch (e) { if (watiMissing(e)) return { available: false }; throw e }
+  }
+
+  // The chats behind a "Right now" number, newest customer message first. state = open | pending | expired | unassigned (anything else is refused).
+  // The phone number and the customer's WhatsApp name come from the messages we saved for that conversation; both stay masked unless reveal=1 (and ALLOW_REVEAL is not false).
+  const WSTATES = { open: "c.status = 'open'", pending: "c.status = 'pending'", expired: "c.status = 'expired'", unassigned: "c.assignment = 'unassigned'" }
+  async function watiList(q) {
+    const state = String(q.state ?? '').trim()
+    if (!WSTATES[state]) return { rows: [], state: null, total: 0, limit: 0, error: 'state must be open, pending, expired or unassigned' }
+    try {
+      const show = reveal(q)
+      const limit = Math.min(1000, Math.max(1, parseInt(q.limit, 10) || 200))
+      const w = where(q, { date: null, lists: WOWN, extra: [WSTATES[state]] })
+      const [{ n: total }] = await Q(`select count(*)::int as n from reporting.v_wati_conversations c ${w.sql}`, w.args)
+      const rows = await Q(`select c.conversation_id, c.status, c.assignment, coalesce(c.assignee_name, c.assignee_id) as owner, coalesce(c.assignee_is_bot, false) as owner_is_bot,
+          c.reply_state, ${TS("(c.last_customer_message_at at time zone 'Asia/Kolkata')")} as last_wrote
+        from reporting.v_wati_conversations c ${w.sql} order by c.last_customer_message_at desc nulls last, c.conversation_id limit ${limit}`, w.args)
+      const who = new Map()
+      if (rows.length) {
+        try {
+          const f = await Q(`select conversation_id,
+              (array_agg(phone10 order by at_utc desc) filter (where coalesce(phone10, '') <> ''))[1] as phone10,
+              (array_agg(sender_name order by at_utc desc) filter (where direction = 'inbound' and coalesce(btrim(sender_name), '') <> ''))[1] as name
+            from reporting.v_chat_messages where conversation_id = any($1::text[]) group by 1`, [rows.map((r) => r.conversation_id)])
+          for (const x of f) who.set(x.conversation_id, x)
+        } catch { /* the chat messages view is not there: phone and name stay unknown */ }
+      }
+      return {
+        revealed: show, canReveal: process.env.ALLOW_REVEAL !== 'false', state, total, limit,
+        rows: rows.map((r) => {
+          const x = who.get(r.conversation_id) ?? {}, nm = String(x.name ?? '').trim()
+          return {
+            key: r.conversation_id, status: r.status, assignment: r.assignment, owner: r.owner ?? null, owner_is_bot: r.owner_is_bot, reply_state: r.reply_state,
+            customer: (show ? nm : NAME(nm)) || 'Name unknown', phone: x.phone10 ? (show ? String(x.phone10) : MASK(x.phone10)) : '', last_wrote: r.last_wrote,
+          }
+        }),
+      }
+    } catch (e) { if (watiMissing(e)) return { available: false, rows: [], state, total: 0, limit: 0 }; throw e }
   }
 
   async function watiOperators(q) {
@@ -338,5 +383,5 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
     } catch (e) { if (watiMissing(e)) return { rows: [] }; throw e }
   }
 
-  return { 'chats/wati-status': watiStatus, 'chats/wati-operators': watiOperators, 'chats/wati-tags': watiTags, 'chats/flow': guard(flow), 'chats/message-types': guard(messageTypes), 'chats/delivery': guard(delivery), 'chats/kpis': guard(kpis), 'chats/trend': guard(trend), 'chats/duration': guard(duration), 'chats/heatmap': guard(heatmap), 'chats/operators': guard(operators), 'chats/cost': guard(cost), 'chats/list': guard(list) }
+  return { 'chats/wati-status': watiStatus, 'chats/wati-list': watiList, 'chats/wati-operators': watiOperators, 'chats/wati-tags': watiTags, 'chats/flow': guard(flow), 'chats/message-types': guard(messageTypes), 'chats/delivery': guard(delivery), 'chats/kpis': guard(kpis), 'chats/trend': guard(trend), 'chats/duration': guard(duration), 'chats/heatmap': guard(heatmap), 'chats/operators': guard(operators), 'chats/cost': guard(cost), 'chats/list': guard(list) }
 }

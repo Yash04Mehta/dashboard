@@ -51,6 +51,79 @@ export function LiveBadge({ updatedAt }: { updatedAt?: number }) {
 /** Number and percentage side by side: the count is the big figure, the share follows it. */
 const withShare = (n?: number | null, p?: number | null) => ({ value: num(n), unit: p == null ? undefined : ` · ${one(p)}%` })
 
+const RIGHT_NOW = [
+  { id: "open", label: "Open", icon: MessageCircle },
+  { id: "pending", label: "Pending", icon: Hourglass },
+  { id: "expired", label: "Expired", icon: TriangleAlert },
+  { id: "unassigned", label: "Unassigned", icon: UserX },
+] as const
+
+/**
+ * "Right now": the Team Inbox as WATI last reported it. It ignores the date range on purpose: Open, Pending, Expired and Unassigned are the Team Inbox filters of the
+ * same name, so each number can be checked there at the same moment. Press a number to see the chats behind it (newest customer message first); the numbers and
+ * phones stay masked until "Show phone numbers" is switched on. Nothing here is calculated by us: it is WATI's own status, up to one sync (a few minutes) old.
+ */
+function RightNow({ rn }: { rn: any }) {
+  const [state, setState] = useState<(typeof RIGHT_NOW)[number]["id"] | null>(null)
+  const { reveal } = useReveal()
+  const list = useApi<any>(state ? "chats/wati-list" : null, { state: state ?? undefined, reveal: reveal ? 1 : undefined, limit: 100 })
+  const asOf = rn.as_of ? rn.as_of.slice(11, 16) : null
+  const hints: Record<string, string> = {
+    open: "Every chat WATI lists as Open right now. Same as the Team Inbox filter Open.",
+    pending: "Every chat WATI lists as Pending right now. Same as the Team Inbox filter Pending.",
+    expired: "Every chat WATI lists as Expired right now, whatever day it expired. Same as the Team Inbox filter Expired.",
+    unassigned: "Every conversation with no owner, including chats where we only sent a template. If the Team Inbox shows a different number, compare it with the smaller figure underneath (customers who wrote in).",
+  }
+  const data = state ? list.data : null
+  return (
+    <div className="flex flex-col gap-3">
+      <ScoreGrid cols={4}
+        title={<span>Right now · the Team Inbox as WATI last reported it{asOf ? ` (${asOf} India time)` : ""}</span>}
+        stats={RIGHT_NOW.map((s) => ({
+          icon: s.icon, label: s.label, loading: false, value: num(rn[s.id]), hint: hints[s.id],
+          tone: s.id === "unassigned" && rn.unassigned > 0 ? ("warn" as const) : undefined,
+          foot: s.id === "unassigned" ? `${num(rn.unassigned_customer)} of them wrote in` : `same as Team Inbox · ${s.label}`,
+        }))} />
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground">See the chats behind a number:</span>
+        {RIGHT_NOW.map((s) => (
+          <Button key={s.id} variant={state === s.id ? "default" : "outline"} size="sm" aria-pressed={state === s.id} onClick={() => setState(state === s.id ? null : s.id)}>
+            {s.label} <span className="tabular-nums opacity-80">{num(rn[s.id])}</span>
+          </Button>
+        ))}
+      </div>
+      {state && (list.error ? <ErrorNote message={list.error} /> : list.loading && !data ? <ChartSkeleton h={160} /> : data && (
+        data.available === false ? <Empty>WATI's status has not been saved yet.</Empty> : data.rows.length === 0 ? <Empty>No chats in this list.</Empty> : (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">
+              {data.total > data.rows.length ? `Newest ${num(data.rows.length)} of ${num(data.total)} chats. ` : `${num(data.total)} chats. `}
+              The time is when the customer last wrote (India time). {data.revealed ? "" : "Phone numbers are masked; switch on “Show phone numbers” at the top to see them."}
+            </p>
+            <div className="max-h-[26rem] overflow-auto rounded-lg border">
+              <Table>
+                <TableHeader className={STICKY_HEAD}>
+                  <TableRow>{["Customer", "Phone", "Owner", "Status", "Customer last wrote"].map((t) => <TableHead key={t} className="whitespace-nowrap">{t}</TableHead>)}</TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.rows.map((r: any) => (
+                    <TableRow key={r.key}>
+                      <TableCell className="whitespace-nowrap font-medium">{r.customer}</TableCell>
+                      <TableCell className="whitespace-nowrap tabular-nums">{r.phone || "—"}</TableCell>
+                      <TableCell className="whitespace-nowrap">{r.owner ? `${r.owner}${r.owner_is_bot ? " (bot)" : ""}` : <span className="text-muted-foreground">No owner</span>}</TableCell>
+                      <TableCell className="whitespace-nowrap capitalize">{r.status}</TableCell>
+                      <TableCell className="whitespace-nowrap tabular-nums">{r.last_wrote ? format(parseISO(r.last_wrote), "d MMM, HH:mm") : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )
+      ))}
+    </div>
+  )
+}
+
 /**
  * 1. "Leads conversation details" (WATI tickets). Only the date range applies to chats, so only it is passed on.
  * Uses WATI's own conversation status (Open, Solved, Expired, Missed, Unassigned) when the WATI Status Sync has saved it. That is the same source and the same
@@ -77,6 +150,7 @@ export function ConversationDetails({ params }: { params: Params }) {
             { icon: UserX, label: "Missed", loading: false, ...of(p.missed), tone: p.missed > 0 ? "bad" : "default", foot: "no reply before the 24 hours ended", hint: "WATI's Missed: the chat had an owner, the customer's 24-hour window ended, and nobody replied. Chats owned by the bot are included." },
           ]} />
         <p className="text-xs text-muted-foreground">From WATI's own conversation status, saved {w.evaluated_at ? "at " + w.evaluated_at.slice(11, 16) + " India time" : "regularly"}. Unassigned: {num(p.unassigned)}. Expired: {num(p.expired)} ({pct(p.total ? (100 * p.expired) / p.total : null, 0)}).</p>
+        {w.right_now && <RightNow rn={w.right_now} />}
       </div>
     )
   }
