@@ -22,8 +22,9 @@ export function MultiSelect({ label, options, value, onChange, counts }: { label
   const [q, setQ] = useState("")
   // ticked options first, then the rest; with counts, each group is biggest first (ties keep their original order)
   const shown = useMemo(() => {
-    const idx = new Map(options.map((o, i) => [o, i]))
-    return options.filter((o) => o.toLowerCase().includes(q.toLowerCase())).sort((x, y) =>
+    const clean = options.filter((o): o is string => typeof o === "string" && o.trim() !== "")   // a stray empty entry must never crash the page
+    const idx = new Map(clean.map((o, i) => [o, i]))
+    return clean.filter((o) => o.toLowerCase().includes(q.toLowerCase())).sort((x, y) =>
       Number(value.includes(y)) - Number(value.includes(x)) || (counts ? (counts[y] ?? 0) - (counts[x] ?? 0) : 0) || idx.get(x)! - idx.get(y)!)
   }, [options, q, value, counts])
   const toggle = (o: string) => onChange(value.includes(o) ? value.filter((x) => x !== o) : [...value, o])

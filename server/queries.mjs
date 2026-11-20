@@ -628,7 +628,8 @@ export function makeApi(ctx) {
       Q(`select v from (select lead_owner as v, count(*) n from reporting.v_leads group by 1 union all select opp_owner, count(*) from reporting.v_opps group by 1) t group by v order by sum(n) desc`),
       Q(`select opportunity_status as v from reporting.v_opps group by 1 order by count(*) desc`),
     ])
-    const [templates, sources, leadStatuses, owners, oppStatuses] = [tRows, sRows, lsRows, oRows, osRows].map((rows) => rows.map((r) => r.v))
+    // an empty (null) entry must never reach a filter list: the page lowercases every entry and used to crash on it
+    const [templates, sources, leadStatuses, owners, oppStatuses] = [tRows, sRows, lsRows, oRows, osRows].map((rows) => rows.map((r) => r.v).filter((v) => v != null && String(v).trim() !== ''))
     return { mode: ctx.mode, asOf: ctx.asOf, messages: mr, leads: lr, opportunities: or, templates, sources: [...sources, '(no matching lead)'], owners, leadStatuses, oppStatuses, staleDays: STALE_DAYS, canReveal: process.env.ALLOW_REVEAL !== 'false' }
   }
 

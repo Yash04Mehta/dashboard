@@ -79,6 +79,22 @@ eq('customer A: totals', pick(cust.totals, ['templates', 'attempts', 'measured',
 const costs = await api['costs/summary']({ from: '2026-11-13', to: '2026-11-14' })
 eq('costs: only messages that did not fail are charged (w1, w2, w4)', costs.templates?.reduce((s, t) => s + t.units, 0) ?? costs.rows?.reduce((s, t) => s + t.units, 0), 3)
 
+// ---- failed sends with no template name (WATI error 100, "missing information"): they are counted, labelled, and never put an empty entry into a filter list.
+// (An empty entry in the template list crashed the whole page on 20 Nov 2026: the page lowercases every entry.)
+await db.exec(`insert into public.wati_messages (wati_id, direction, phone_no, template_name, sent_at, delivered_at, read_at, replied_at, failed_at) values
+  ('n1', 'template', '919877777777', null,  null,                        null, null, null, '2026-11-14 13:01+05:30'),
+  ('n2', 'template', '919877777777', '   ', '2026-11-14 13:05+05:30',    null, null, null, '2026-11-14 13:06+05:30')`)
+eq('no-name sends: both are in the view under one clear label', await Q(`select template_name, count(*)::int as n from reporting.v_message_sends where template_name like '(unknown%' group by 1`), [{ template_name: '(unknown template)', n: 2 }])
+eq('no-name sends: no row of the view has an empty template name', (await Q(`select count(*)::int as n from reporting.v_message_sends where template_name is null or btrim(template_name) = ''`))[0].n, 0)
+const kN = (await api['messages/kpis']({ from: '2026-11-13', to: '2026-11-14' })).current
+eq('13-14 Nov: the two no-name failed sends are counted too (4 + 2 messages, 1 + 2 failed)', pick(kN, ['measured', 'failed']), { measured: 6, failed: 3 })
+const mt = await api['meta']()
+eq('filter lists: the template list has the label and no empty entry', [mt.templates.includes('(unknown template)'), mt.templates.some((v) => v == null || String(v).trim() === '')], [true, false])
+eq('filter lists: sources, statuses and owners have no empty entry either', [mt.sources, mt.leadStatuses, mt.owners, mt.oppStatuses].map((a) => a.some((v) => v == null || String(v).trim() === '')), [false, false, false, false])
+// the same view as it was BEFORE the fix would have produced the empty entry: prove the test can see it
+await db.exec(`create temp view v_old_shape as select (case when btrim(coalesce(w.template_name, '')) = '' then null else w.template_name end) as template_name from public.wati_messages w where w.direction = 'template'`)
+eq('sanity: without the label the same data does contain an empty template name', (await Q(`select count(*)::int as n from v_old_shape where template_name is null`))[0].n >= 2, true)
+
 // ---- Chats page: chatbot messages are not team replies
 await db.exec(sql('chats.sql'))
 await db.exec(`delete from public.wati_messages;

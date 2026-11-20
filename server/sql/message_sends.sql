@@ -24,7 +24,7 @@ with cutoff as (
 ),
 older as (
   -- before the cut-off: the pivot, exactly like reporting.v_message_rows
-  select p.id::text as id, p.phone_no, p.template_name, p.whatsappmessageid as last_message_id,
+  select p.id::text as id, p.phone_no, coalesce(nullif(btrim(p.template_name), ''), '(unknown template)') as template_name, p.whatsappmessageid as last_message_id,
          coalesce(p.templatemessagesent_v2, 0) as sent, coalesce(p.templatemessagefailed, 0) as failed,
          coalesce(p.delivered, 0) as delivered_raw, coalesce(p.sentmessageread_v2, 0) as read_raw, coalesce(p.sentmessagereplied_v2, 0) as replied_raw,
          p.created_at_ist as first_at, p.updated_at_ist as last_at,
@@ -34,8 +34,10 @@ older as (
   where p.created_at_ist::date < (select d from cutoff)
 ),
 newer as (
-  -- from the cut-off: every template message WATI reported, one row each
-  select w.wati_id as id, w.phone_no, w.template_name, w.wati_id as last_message_id,
+  -- from the cut-off: every template message WATI reported, one row each.
+  -- A few failed sends carry no template name at all (WATI error 100, "missing information"): they get the label "(unknown template)" so they are still counted
+  -- but can never put an empty entry into the template filter (an empty entry used to crash the page).
+  select w.wati_id as id, w.phone_no, coalesce(nullif(btrim(w.template_name), ''), '(unknown template)') as template_name, w.wati_id as last_message_id,
          case when w.failed_at is null then 1 else 0 end as sent, case when w.failed_at is null then 0 else 1 end as failed,
          (w.delivered_at is not null)::int as delivered_raw, (w.read_at is not null)::int as read_raw, (w.replied_at is not null)::int as replied_raw,
          (coalesce(w.sent_at, w.failed_at) at time zone 'Asia/Kolkata') as first_at,
