@@ -283,7 +283,10 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
   // customer last wrote (India time). Open and Pending are WATI's live counts, so they ignore the dates; Expired and Missed follow the day the chat expired (customer's last message + 24 h).
   // Rows with WATI's status "broadcast" (we messaged, the customer never wrote) are left out of every number here: they are not conversations, and our own "Awaiting customer" count covers them.
   // d = the day the customer last wrote; xd = the day the chat expired (24 hours later). Expired and Missed follow xd, because that is how WATI dates them.
-  const WATI = `(select *, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations where status is distinct from 'broadcast') c`
+  // st = the status as it really is NOW. WATI flips a chat to Expired exactly 24 hours after the customer's last message, but our copy is only as fresh as the last sync (and a chat can sit
+  // as Open for a few minutes after its 24 hours). So an Open, Pending or New chat whose 24 hours are up counts as Expired here, without waiting for the next sync.
+  const ST = `case when status in ('open', 'pending', 'new') and last_customer_message_at + interval '24 hours' <= now() then 'expired' else status end`
+  const WATI = `(select *, ${ST} as st, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations where status is distinct from 'broadcast') c`
   const watiMissing = (e) => /v_wati_conversations/.test(e.message) && /(does not exist|permission denied)/.test(e.message)
 
   const WOWN = { 'coalesce(c.assignee_name, c.assignee_id)': 'owners' }   // the Agent filter on WATI's own rows
@@ -291,62 +294,85 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
   // The "Right now" tiles and lists follow the page's filters: the date range, the Agent filter (owners) and the Lead source filter (sources). The Template and Status filters do
   // not apply to chats. Lead source: the customer behind a conversation is found by phone number (from the messages we saved for it) and gets the source of the newest lead with
   // that number, or "(no matching lead)". That lookup is only built when the Lead source filter is used. The date is d (the day the customer last wrote) or xd (the day it expired).
-  const WATI_ALL = `(select *, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations) c`
+  const WATI_ALL = `(select *, ${ST} as st, (last_customer_message_at at time zone 'Asia/Kolkata')::date as d, ((last_customer_message_at + interval '24 hours') at time zone 'Asia/Kolkata')::date as xd from reporting.v_wati_conversations) c`
   const SRC_JOIN = `left join (select m.conversation_id, (array_agg(l.lead_source order by l.created_at desc nulls last))[1] as lead_source
       from (select conversation_id, (array_agg(phone10 order by at_utc desc) filter (where coalesce(phone10, '') <> ''))[1] as phone10 from reporting.v_chat_messages where conversation_id is not null group by 1) m
       join reporting.v_leads l on l.phone10 = m.phone10 group by 1) ls on ls.conversation_id = c.conversation_id`
-  const rnWhere = (q, dateCol, extra = []) => {
+  // Did a PERSON answer the customer's latest message? WATI's reply_state counts a bot's answer as a reply too, so a chat the bot owns is never "answered by a person".
+  const REPLIED = `coalesce(c.reply_state = 'replied' and not coalesce(c.assignee_is_bot, false), false)`
+  // Follow-up outside WhatsApp: the team also works leads by phone and writes it up in Salesforce, which WATI cannot see. The customer behind a conversation is found by phone number (from
+  // the messages we saved for it); sf_signal = a lead with that number has moved on from "New", has a follow-up task or a status-change event, or an opportunity exists. A conversation whose
+  // phone number we do not have gets no row here (shown as "can't tell", never as "untouched"). It is the lead's CURRENT state, so it shows that someone worked the lead, not when.
+  const FLAG = (x) => `coalesce(${x}::text, '0') not in ('0', 'false', 'f', '')`
+  const FU_JOIN = `left join (select m.conversation_id,
+      (exists (select 1 from reporting.v_leads l where l.phone10 = m.phone10 and (coalesce(l.lead_status, '') not in ('', 'New', 'NA') or ${FLAG('l.task1')} or ${FLAG('l.task2')} or ${FLAG('l.task3')}
+          or ${FLAG('l.to_nurturing')} or ${FLAG('l.to_not_connected')} or ${FLAG('l.to_unqualified')}))
+       or exists (select 1 from reporting.v_opps o where o.phone10 = m.phone10)) as sf_signal
+      from (select conversation_id, (array_agg(phone10 order by at_utc desc) filter (where coalesce(phone10, '') <> ''))[1] as phone10 from reporting.v_chat_messages where conversation_id is not null group by 1) m
+      where m.phone10 is not null) fu on fu.conversation_id = c.conversation_id`
+  const rnWhere = (q, dateCol, extra = [], withFollowUp = false) => {
     const bySource = String(q.sources ?? '').trim() !== ''
     const w = where(q, { date: dateCol, extra, lists: { ...WOWN, ...(bySource ? { "coalesce(ls.lead_source, '(no matching lead)')": 'sources' } : {}) } })
-    return { ...w, from: `${WATI_ALL}${bySource ? ' ' + SRC_JOIN : ''}` }
+    return { ...w, from: `${WATI_ALL}${bySource ? ' ' + SRC_JOIN : ''}${withFollowUp ? ' ' + FU_JOIN : ''}` }
   }
 
   async function watiStatus(q) {
     try {
       const w = where(q, { date: 'c.d', lists: WOWN })
-      const [live] = await Q(`select count(*)::int as known, count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending,
+      const [live] = await Q(`select count(*)::int as known, count(*) filter (where c.st = 'open')::int as open, count(*) filter (where c.st = 'pending')::int as pending,
           to_char(max(c.evaluated_at) at time zone 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS') as evaluated_at from ${WATI}`)
       if (!live.known) return { available: false }
-      const wl = where(q, { date: null, lists: WOWN, extra: ["c.status in ('open', 'pending')"] })
-      const [lv] = await Q(`select count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending from ${WATI} ${wl.sql}`, wl.args)
+      const wl = where(q, { date: null, lists: WOWN, extra: ["c.st in ('open', 'pending')"] })
+      const [lv] = await Q(`select count(*) filter (where c.st = 'open')::int as open, count(*) filter (where c.st = 'pending')::int as pending from ${WATI} ${wl.sql}`, wl.args)
       const [p] = await Q(`select count(*)::int as total,
-          count(*) filter (where c.status = 'solved')::int as solved,
-          count(*) filter (where c.status = 'solved' and c.assignee_is_bot)::int as solved_by_bot,
-          count(*) filter (where c.status = 'solved' and not c.assignee_is_bot)::int as solved_by_operator,
+          count(*) filter (where c.st = 'solved')::int as solved,
+          count(*) filter (where c.st = 'solved' and c.assignee_is_bot)::int as solved_by_bot,
+          count(*) filter (where c.st = 'solved' and not c.assignee_is_bot)::int as solved_by_operator,
           count(*) filter (where c.assignment = 'unassigned')::int as unassigned
         from ${WATI} ${w.sql}`, w.args)
-      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'"] })
+      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.st = 'expired'"] })
       const [x] = await Q(`select count(*)::int as expired, count(*) filter (where c.assignment = 'assigned' and c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql}`, wx.args)
       // "Right now": WATI's own status as last saved, for the page's filters (see rnWhere). With nothing picked (All time, no agent, no source) these are the whole Team Inbox, so Open,
       // Pending and Expired can be compared with the Team Inbox filters of the same name. Open, Pending and Unassigned follow the day the customer last wrote; Expired follows the day the
       // chat expired (like the Expired tile above). Unassigned counts every conversation with no owner, including the ones we only sent a template to (WATI status "broadcast");
       // unassigned_customer leaves those out. Both are returned so either can be compared with the Team Inbox.
       const wr = rnWhere(q, 'c.d')
-      const [rn] = await Q(`select count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending,
+      const [rn] = await Q(`select count(*) filter (where c.st = 'open')::int as open, count(*) filter (where c.st = 'pending')::int as pending,
           count(*) filter (where c.assignment = 'unassigned')::int as unassigned,
-          count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast')::int as unassigned_customer
+          count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast')::int as unassigned_customer,
+          count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast' and coalesce(c.assignee_is_bot, false))::int as unassigned_bot,
+          count(*) filter (where c.assignment = 'unassigned' and c.status is distinct from 'broadcast' and c.assignee_id is null)::int as unassigned_nobody,
+          count(*) filter (where c.st in ('open', 'pending') and not ${REPLIED})::int as needs_reply
         from ${wr.from} ${wr.sql}`, wr.args)
-      const wrx = rnWhere(q, 'c.xd', ["c.status = 'expired'"])
+      const wrx = rnWhere(q, 'c.xd', ["c.st = 'expired'"])
       const [rx] = await Q(`select count(*)::int as expired from ${wrx.from} ${wrx.sql}`, wrx.args)
       return { available: true, evaluated_at: live.evaluated_at, live: { open: lv.open, pending: lv.pending },
-        right_now: { open: rn.open, pending: rn.pending, expired: rx.expired, unassigned: rn.unassigned, unassigned_customer: rn.unassigned_customer, as_of: live.evaluated_at },
+        right_now: { open: rn.open, pending: rn.pending, expired: rx.expired, unassigned: rn.unassigned, unassigned_customer: rn.unassigned_customer,
+          unassigned_bot: rn.unassigned_bot, unassigned_nobody: rn.unassigned_nobody, needs_reply: rn.needs_reply, as_of: live.evaluated_at },
         period: { ...p, expired: x.expired, missed: x.missed } }
     } catch (e) { if (watiMissing(e)) return { available: false }; throw e }
   }
 
   // The chats behind a "Right now" number, newest customer message first. state = open | pending | expired | unassigned (anything else is refused).
   // The phone number and the customer's WhatsApp name come from the messages we saved for that conversation; both stay masked unless reveal=1 (and ALLOW_REVEAL is not false).
-  const WSTATES = { open: "c.status = 'open'", pending: "c.status = 'pending'", expired: "c.status = 'expired'", unassigned: "c.assignment = 'unassigned'" }
+  // needs_reply = open or pending and no person has answered the latest message; bot_held = no owner in WATI because the chatbot holds the chat (customers only, not template-only chats);
+  // fu_* = the "who followed up" groups (see followUp below).
+  const NOT_BC = `c.status is distinct from 'broadcast'`
+  const WSTATES = { open: "c.st = 'open'", pending: "c.st = 'pending'", expired: "c.st = 'expired'", unassigned: "c.assignment = 'unassigned'",
+    needs_reply: `c.st in ('open', 'pending') and not ${REPLIED}`, bot_held: `c.assignment = 'unassigned' and ${NOT_BC} and coalesce(c.assignee_is_bot, false)`,
+    fu_replied: `${NOT_BC} and ${REPLIED}`, fu_elsewhere: `${NOT_BC} and not ${REPLIED} and fu.sf_signal`, fu_untouched: `${NOT_BC} and not ${REPLIED} and fu.sf_signal is false`,
+    fu_unknown: `${NOT_BC} and not ${REPLIED} and fu.conversation_id is null` }
   async function watiList(q) {
     const state = String(q.state ?? '').trim()
-    if (!WSTATES[state]) return { rows: [], state: null, total: 0, limit: 0, error: 'state must be open, pending, expired or unassigned' }
+    if (!Object.hasOwn(WSTATES, state)) return { rows: [], state: null, total: 0, limit: 0, error: 'state must be open, pending, expired, unassigned, needs_reply, bot_held or a fu_ group' }
     try {
       const show = reveal(q)
       const limit = Math.min(1000, Math.max(1, parseInt(q.limit, 10) || 200))
-      const w = rnWhere(q, state === 'expired' ? 'c.xd' : 'c.d', [WSTATES[state]])   // the same filters as the tile it belongs to
+      const w = rnWhere(q, state === 'expired' ? 'c.xd' : 'c.d', [WSTATES[state]], state.startsWith('fu_'))   // the same filters as the tile it belongs to
       const [{ n: total }] = await Q(`select count(*)::int as n from ${w.from} ${w.sql}`, w.args)
-      const rows = await Q(`select c.conversation_id, c.status, c.assignment, coalesce(c.assignee_name, c.assignee_id) as owner, coalesce(c.assignee_is_bot, false) as owner_is_bot,
-          c.reply_state, ${TS("(c.last_customer_message_at at time zone 'Asia/Kolkata')")} as last_wrote
+      const rows = await Q(`select c.conversation_id, c.st as status, c.assignment, coalesce(c.assignee_name, c.assignee_id) as owner, coalesce(c.assignee_is_bot, false) as owner_is_bot,
+          c.reply_state, ${TS("(c.last_customer_message_at at time zone 'Asia/Kolkata')")} as last_wrote,
+          round(extract(epoch from (now() - c.last_customer_message_at)) / 60)::int as waiting_min
         from ${w.from} ${w.sql} order by c.last_customer_message_at desc nulls last, c.conversation_id limit ${limit}`, w.args)
       const who = new Map()
       if (rows.length) {
@@ -364,7 +390,7 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
           const x = who.get(r.conversation_id) ?? {}, nm = String(x.name ?? '').trim()
           return {
             key: r.conversation_id, status: r.status, assignment: r.assignment, owner: r.owner ?? null, owner_is_bot: r.owner_is_bot, reply_state: r.reply_state,
-            customer: (show ? nm : NAME(nm)) || 'Name unknown', phone: x.phone10 ? (show ? String(x.phone10) : MASK(x.phone10)) : '', last_wrote: r.last_wrote,
+            customer: (show ? nm : NAME(nm)) || 'Name unknown', phone: x.phone10 ? (show ? String(x.phone10) : MASK(x.phone10)) : '', last_wrote: r.last_wrote, waiting_min: r.waiting_min,
           }
         }),
       }
@@ -376,14 +402,14 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
       const w = where(q, { date: 'c.d', lists: WOWN, extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null'] })
       // Assigned and Solved follow the day the customer last wrote. Expired and Missed follow the day the chat expired (like WATI's Operator Performance). Open and Pending are right now.
       const per = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot,
-          count(*)::int as assigned, count(*) filter (where c.status = 'solved')::int as solved
+          count(*)::int as assigned, count(*) filter (where c.st = 'solved')::int as solved
         from ${WATI} ${w.sql} group by 1`, w.args)
-      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.status = 'expired'", "c.assignment = 'assigned'", 'c.assignee_id is not null'] })
+      const wx = where(q, { date: 'c.xd', lists: WOWN, extra: ["c.st = 'expired'", "c.assignment = 'assigned'", 'c.assignee_id is not null'] })
       const exp = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot, count(*)::int as expired,
           count(*) filter (where c.last_effective_reply_at is null)::int as missed from ${WATI} ${wx.sql} group by 1`, wx.args)
-      const wn = where(q, { date: null, lists: WOWN, extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null', "c.status in ('open', 'pending')"] })
+      const wn = where(q, { date: null, lists: WOWN, extra: ["c.assignment = 'assigned'", 'c.assignee_id is not null', "c.st in ('open', 'pending')"] })
       const now = await Q(`select coalesce(c.assignee_name, c.assignee_id) as operator, bool_or(c.assignee_is_bot) as is_bot,
-          count(*) filter (where c.status = 'open')::int as open, count(*) filter (where c.status = 'pending')::int as pending
+          count(*) filter (where c.st = 'open')::int as open, count(*) filter (where c.st = 'pending')::int as pending
         from ${WATI} ${wn.sql} group by 1`, wn.args)
       const by = new Map(per.map((r) => [r.operator, { ...r, open: 0, pending: 0, expired: 0, missed: 0 }]))
       const blank = (o) => ({ operator: o.operator, is_bot: o.is_bot, assigned: 0, solved: 0, expired: 0, missed: 0, open: 0, pending: 0 })
@@ -402,5 +428,28 @@ export function makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, re
     } catch (e) { if (watiMissing(e)) return { rows: [] }; throw e }
   }
 
-  return { 'chats/wati-status': watiStatus, 'chats/wati-list': watiList, 'chats/wati-operators': watiOperators, 'chats/wati-tags': watiTags, 'chats/flow': guard(flow), 'chats/message-types': guard(messageTypes), 'chats/delivery': guard(delivery), 'chats/kpis': guard(kpis), 'chats/trend': guard(trend), 'chats/duration': guard(duration), 'chats/heatmap': guard(heatmap), 'chats/operators': guard(operators), 'chats/cost': guard(cost), 'chats/list': guard(list) }
+  // "Who followed up": every customer chat (template-only chats left out) whose customer last wrote in the dates, in exactly one of four groups, so the groups add up to the total:
+  //   replied   = a person answered the latest message in WATI;
+  //   elsewhere = nobody answered in WATI, but Salesforce shows the lead was worked (status moved on, task, or opportunity): the team called or followed up there;
+  //   untouched = no answer in WATI and nothing in Salesforce: the ones to chase;
+  //   unknown   = no answer in WATI and we have no phone number for the chat, so Salesforce cannot be checked.
+  // Needs the Salesforce views and the chat messages view; without them it says so instead of failing.
+  async function followUp(q) {
+    try {
+      const w = rnWhere(q, 'c.d', [NOT_BC], true)
+      const [r] = await Q(`select count(*)::int as total,
+          count(*) filter (where ${REPLIED})::int as replied,
+          count(*) filter (where not ${REPLIED} and fu.sf_signal)::int as elsewhere,
+          count(*) filter (where not ${REPLIED} and fu.sf_signal is false)::int as untouched,
+          count(*) filter (where not ${REPLIED} and fu.conversation_id is null)::int as unknown
+        from ${w.from} ${w.sql}`, w.args)
+      return { available: true, ...r }
+    } catch (e) {
+      if (watiMissing(e)) return { available: false }
+      if (/(column|relation) .* does not exist|permission denied/i.test(e.message)) return { available: false, needsSalesforceView: true }
+      throw e
+    }
+  }
+
+  return { 'chats/wati-status': watiStatus, 'chats/wati-list': watiList, 'chats/follow-up': followUp, 'chats/wati-operators': watiOperators, 'chats/wati-tags': watiTags, 'chats/flow': guard(flow), 'chats/message-types': guard(messageTypes), 'chats/delivery': guard(delivery), 'chats/kpis': guard(kpis), 'chats/trend': guard(trend), 'chats/duration': guard(duration), 'chats/heatmap': guard(heatmap), 'chats/operators': guard(operators), 'chats/cost': guard(cost), 'chats/list': guard(list) }
 }

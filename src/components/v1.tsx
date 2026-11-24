@@ -5,7 +5,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { Area, Bar, BarChart, CartesianGrid, ComposedChart, ReferenceLine, XAxis, YAxis } from "recharts"
 import { format, parseISO } from "date-fns"
-import { ArrowRight, CheckCheck, ChevronLeft, ChevronRight, CircleHelp, Download, Eye, EyeOff, Hourglass, Inbox as InboxIcon, Info, MessageCircle, Search, Send, ShieldAlert, TriangleAlert, UserCheck, Users, UserX, Wrench } from "lucide-react"
+import { ArrowRight, Bot, CheckCheck, ChevronLeft, ChevronRight, CircleHelp, Download, Eye, EyeOff, Hourglass, Inbox as InboxIcon, Info, MessageCircle, PhoneCall, Reply, Search, Send, ShieldAlert, TriangleAlert, UserCheck, Users, UserX, Wrench } from "lucide-react"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -54,67 +54,110 @@ const withShare = (n?: number | null, p?: number | null) => ({ value: num(n), un
 const RIGHT_NOW = [
   { id: "open", label: "Open", icon: MessageCircle },
   { id: "pending", label: "Pending", icon: Hourglass },
+  { id: "needs_reply", label: "Needs our reply", icon: Reply },
   { id: "expired", label: "Expired", icon: TriangleAlert },
   { id: "unassigned", label: "Unassigned", icon: UserX },
+  { id: "bot_held", label: "Held by the bot", icon: Bot },
 ] as const
 
+/** "Who followed up": every chat is in exactly one group, so the four numbers add up to the chats. */
+const FOLLOW_UP = [
+  { id: "fu_replied", key: "replied", label: "Answered in WATI", icon: UserCheck, tone: "good" as const, foot: "a person replied to the latest message" },
+  { id: "fu_elsewhere", key: "elsewhere", label: "Followed up in Salesforce", icon: PhoneCall, tone: undefined, foot: "no WATI reply, but the lead was worked there" },
+  { id: "fu_untouched", key: "untouched", label: "Untouched", icon: ShieldAlert, tone: "bad" as const, foot: "no reply and nothing in Salesforce" },
+  { id: "fu_unknown", key: "unknown", label: "Can't tell", icon: CircleHelp, tone: undefined, foot: "no phone number saved, so Salesforce can't be checked" },
+] as const
+
+type ListState = (typeof RIGHT_NOW)[number]["id"] | (typeof FOLLOW_UP)[number]["id"]
+const LIST_LABEL: Record<string, string> = Object.fromEntries([...RIGHT_NOW, ...FOLLOW_UP].map((s) => [s.id, s.label]))
+
 /**
- * "Right now": WATI's own status as last reported, for the page's filters: the date range, Owner and Lead source (Template does not apply to chats). Open, Pending and
- * Unassigned count chats whose customer last wrote in the dates; Expired counts chats that expired in the dates. With All time and no Owner or Lead source picked it is the
+ * "Right now" and "Who followed up", for the page's filters: the date range, Owner and Lead source (Template does not apply to chats). Open, Pending, Needs our reply, Unassigned and
+ * Held by the bot count chats whose customer last wrote in the dates; Expired counts chats that expired in the dates. With All time and no Owner or Lead source picked it is the
  * whole Team Inbox, so each number can be checked there at the same moment. Press a number to see the chats behind it (newest customer message first); phones stay masked until
- * "Show phone numbers" is switched on. Nothing here is calculated by us: it is WATI's own status, up to one sync (a few minutes) old.
+ * "Show phone numbers" is switched on. The status is WATI's own, up to one sync (a few minutes) old, with one correction: a chat whose 24 hours are up counts as Expired at once
+ * instead of waiting for WATI's next report.
  */
 function RightNow({ params }: { params: Params }) {
-  const [state, setState] = useState<(typeof RIGHT_NOW)[number]["id"] | null>(null)
+  const [state, setState] = useState<ListState | null>(null)
   const { reveal } = useReveal()
   const f = { from: params.from, to: params.to, owners: params.owners, sources: params.sources }   // the filters that apply to chats (not Template)
   const filtered = !!(f.from || f.to || f.owners || f.sources)
   const ws = useApi<any>("chats/wati-status", f)
+  const fu = useApi<any>("chats/follow-up", f)
   const list = useApi<any>(state ? "chats/wati-list" : null, { ...f, state: state ?? undefined, reveal: reveal ? 1 : undefined, limit: 100 })
   const rn = ws.data?.right_now
   if (ws.error) return <ErrorNote message={ws.error} />
   if (!rn) return ws.loading ? <ChartSkeleton h={120} /> : null
   const asOf = rn.as_of ? rn.as_of.slice(11, 16) : null
-  const hints: Record<string, string> = filtered ? {
-    open: "Chats WATI lists as Open right now whose customer last wrote in the chosen dates, for the chosen Owner and Lead source. Pick All time with no Owner or Lead source to see the whole Team Inbox.",
-    pending: "Chats WATI lists as Pending right now whose customer last wrote in the chosen dates, for the chosen Owner and Lead source.",
-    expired: "Chats WATI lists as Expired that expired in the chosen dates (the customer's last message plus 24 hours), for the chosen Owner and Lead source.",
-    unassigned: "Conversations with no owner whose customer last wrote in the chosen dates, including chats where we only sent a template. The smaller figure underneath counts only customers who wrote in.",
-  } : {
-    open: "Every chat WATI lists as Open right now. Same as the Team Inbox filter Open.",
-    pending: "Every chat WATI lists as Pending right now. Same as the Team Inbox filter Pending.",
-    expired: "Every chat WATI lists as Expired right now, whatever day it expired. Same as the Team Inbox filter Expired.",
-    unassigned: "Every conversation with no owner, including chats where we only sent a template. If the Team Inbox shows a different number, compare it with the smaller figure underneath (customers who wrote in).",
+  const where = filtered ? "whose customer last wrote in the chosen dates, for the chosen Owner and Lead source" : "in the whole Team Inbox"
+  const hints: Record<string, string> = {
+    open: `Chats WATI lists as Open right now ${where}. A chat whose 24 hours are up is counted as Expired, not Open, even if WATI has not reported it yet. Pick All time with no Owner or Lead source to compare with the Team Inbox filter Open.`,
+    pending: `Chats WATI lists as Pending right now ${where}.`,
+    needs_reply: `Open or pending chats ${where} where no person has answered the customer's latest message. A bot's answer does not count, so this is the list your team still has to answer.`,
+    expired: filtered ? "Chats that expired in the chosen dates (the customer's last message plus 24 hours), for the chosen Owner and Lead source." : "Every chat that has expired, whatever day it expired. Same as the Team Inbox filter Expired.",
+    unassigned: `Conversations with no owner ${where}, including chats where we only sent a template and the customer never wrote. The smaller figure underneath counts only customers who wrote in.`,
+    bot_held: `Customers who wrote in, ${where}, whose chat is held by the chatbot, so nobody on the team owns it. WATI lists these as Unassigned. They stay with the bot until someone takes them.`,
   }
   const data = state ? list.data : null
+  const fuOk = fu.data?.available
+  const fuShare = (n: number) => (fu.data?.total ? Math.round((1000 * n) / fu.data.total) / 10 : null)
+  const pick = (id: ListState) => setState(state === id ? null : id)
+  const val = (id: string): number => (id === "bot_held" ? rn.unassigned_bot : rn[id])   // the server calls the bot-held count unassigned_bot
   return (
     <div className="flex flex-col gap-3">
-      <ScoreGrid cols={4}
+      <ScoreGrid cols={3}
         title={<span>Right now · {filtered ? "WATI's status for the filters above" : "the whole Team Inbox as WATI last reported it"}{asOf ? ` (${asOf} India time)` : ""}</span>}
         stats={RIGHT_NOW.map((s) => ({
-          icon: s.icon, label: s.label, loading: false, value: num(rn[s.id]), hint: hints[s.id],
-          tone: s.id === "unassigned" && rn.unassigned > 0 ? ("warn" as const) : undefined,
-          foot: s.id === "unassigned" ? `${num(rn.unassigned_customer)} of them wrote in` : filtered ? "in the chosen filters" : `same as Team Inbox · ${s.label}`,
+          icon: s.icon, label: s.label, loading: false, value: num(val(s.id)), hint: hints[s.id],
+          tone: s.id === "unassigned" && rn.unassigned > 0 ? ("warn" as const) : s.id === "bot_held" && rn.unassigned_bot > 0 ? ("warn" as const) : s.id === "needs_reply" && rn.needs_reply > 0 ? ("warn" as const) : undefined,
+          foot: s.id === "unassigned" ? `${num(rn.unassigned_customer)} of them wrote in`
+            : s.id === "bot_held" ? `${num(rn.unassigned_nobody)} more with no owner at all`
+            : s.id === "needs_reply" ? "no person has answered yet"
+            : filtered ? "in the chosen filters" : `same as Team Inbox · ${s.label}`,
         }))} />
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">See the chats behind a number:</span>
         {RIGHT_NOW.map((s) => (
-          <Button key={s.id} variant={state === s.id ? "default" : "outline"} size="sm" aria-pressed={state === s.id} onClick={() => setState(state === s.id ? null : s.id)}>
-            {s.label} <span className="tabular-nums opacity-80">{num(rn[s.id])}</span>
+          <Button key={s.id} variant={state === s.id ? "default" : "outline"} size="sm" aria-pressed={state === s.id} onClick={() => pick(s.id)}>
+            {s.label} <span className="tabular-nums opacity-80">{num(val(s.id))}</span>
           </Button>
         ))}
       </div>
+      {fuOk ? (
+        <>
+          <ScoreGrid cols={4}
+            title={<span>Who followed up · {num(fu.data.total)} customers who wrote in{filtered ? " (chosen filters)" : ""}</span>}
+            stats={FOLLOW_UP.map((s) => ({
+              icon: s.icon, label: s.label, loading: false, ...withShare(fu.data[s.key], fuShare(fu.data[s.key])), tone: s.id === "fu_untouched" && fu.data.untouched > 0 ? ("bad" as const) : s.tone, foot: s.foot,
+              hint: s.id === "fu_elsewhere"
+                ? "Nobody replied in WATI, but Salesforce shows the lead was worked: its status moved on from New, it has a follow-up task or a status change, or it has an opportunity. The team often calls and writes it up in Salesforce, which WATI cannot see. This is the lead's current state, so it shows that someone worked it, not when."
+                : s.id === "fu_untouched" ? "Nobody replied in WATI and Salesforce shows nothing for this customer (the lead is still New, no task, no opportunity). These are the chats to chase."
+                : s.id === "fu_unknown" ? "No reply in WATI, and we have no phone number saved for the chat, so we cannot look the customer up in Salesforce. Shown on its own so it is never mistaken for untouched."
+                : "A person (not the bot) replied to the customer's latest message in WATI.",
+            }))} />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">See the chats in a group:</span>
+            {FOLLOW_UP.map((s) => (
+              <Button key={s.id} variant={state === s.id ? "default" : "outline"} size="sm" aria-pressed={state === s.id} onClick={() => pick(s.id)}>
+                {s.label} <span className="tabular-nums opacity-80">{num(fu.data[s.key])}</span>
+              </Button>
+            ))}
+          </div>
+        </>
+      ) : fu.data?.needsSalesforceView ? <p className="text-xs text-muted-foreground">“Who followed up” needs the Salesforce lead and opportunity views, which are not available here yet.</p> : null}
       {state && (list.error ? <ErrorNote message={list.error} /> : list.loading && !data ? <ChartSkeleton h={160} /> : data && (
         data.available === false ? <Empty>WATI's status has not been saved yet.</Empty> : data.rows.length === 0 ? <Empty>No chats in this list.</Empty> : (
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{LIST_LABEL[state]}.</span>{" "}
               {data.total > data.rows.length ? `Newest ${num(data.rows.length)} of ${num(data.total)} chats. ` : `${num(data.total)} chats. `}
-              The time is when the customer last wrote (India time). {data.revealed ? "" : "Phone numbers are masked; switch on “Show phone numbers” at the top to see them."}
+              The time is when the customer last wrote (India time); Waiting is how long ago that was. {data.revealed ? "" : "Phone numbers are masked; switch on “Show phone numbers” at the top to see them."}
             </p>
             <div className="max-h-[26rem] overflow-auto rounded-lg border">
               <Table>
                 <TableHeader className={STICKY_HEAD}>
-                  <TableRow>{["Customer", "Phone", "Owner", "Status", "Customer last wrote"].map((t) => <TableHead key={t} className="whitespace-nowrap">{t}</TableHead>)}</TableRow>
+                  <TableRow>{["Customer", "Phone", "Owner", "Status", "Customer last wrote", "Waiting"].map((t) => <TableHead key={t} className="whitespace-nowrap">{t}</TableHead>)}</TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.rows.map((r: any) => (
@@ -124,6 +167,7 @@ function RightNow({ params }: { params: Params }) {
                       <TableCell className="whitespace-nowrap">{r.owner ? `${r.owner}${r.owner_is_bot ? " (bot)" : ""}` : <span className="text-muted-foreground">No owner</span>}</TableCell>
                       <TableCell className="whitespace-nowrap capitalize">{r.status}</TableCell>
                       <TableCell className="whitespace-nowrap tabular-nums">{r.last_wrote ? format(parseISO(r.last_wrote), "d MMM, HH:mm") : "—"}</TableCell>
+                      <TableCell className="whitespace-nowrap tabular-nums">{duration(r.waiting_min)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -158,10 +202,10 @@ export function ConversationDetails({ params }: { params: Params }) {
           stats={[
             { icon: InboxIcon, label: "Chats", loading: false, value: num(p.total), foot: "customers who wrote in", hint: "One chat is one conversation with a customer who wrote to us, as WATI counts it. Messages we sent that nobody answered are not included." },
             { icon: UserCheck, label: "Solved", loading: false, ...of(p.solved), tone: "good", foot: `${num(p.solved_by_bot)} by the bot` },
-            { icon: Hourglass, label: "Open or pending now", loading: false, value: num(w.live.open + w.live.pending), foot: `${num(w.live.open)} open, ${num(w.live.pending)} pending`, hint: "Right now, so this ignores the date range." },
-            { icon: UserX, label: "Missed", loading: false, ...of(p.missed), tone: p.missed > 0 ? "bad" : "default", foot: "no reply before the 24 hours ended", hint: "WATI's Missed: the chat had an owner, the customer's 24-hour window ended, and nobody replied. Chats owned by the bot are included." },
+            { icon: Hourglass, label: "Open or pending (all days)", loading: false, value: num(w.live.open + w.live.pending), foot: `${num(w.live.open)} open, ${num(w.live.pending)} pending`, hint: "Every chat that is open or pending right now, whatever day the customer wrote, so it ignores the date range. The \"Right now\" tiles below follow the date range, so they can be smaller. A chat whose 24 hours are up is not counted." },
+            { icon: UserX, label: "Missed", loading: false, ...withShare(p.missed, p.expired ? Math.round((1000 * p.missed) / p.expired) / 10 : null), tone: p.missed > 0 ? "bad" : "default", foot: `of the ${num(p.expired)} that expired in these dates`, hint: "WATI's Missed is a part of Expired: the chat had an owner, its 24 hours ended in these dates, and nobody replied in WATI. Chats owned by the bot are included. The team may still have followed up by phone: see \"Who followed up\" below." },
           ]} />
-        <p className="text-xs text-muted-foreground">From WATI's own conversation status, saved {w.evaluated_at ? "at " + w.evaluated_at.slice(11, 16) + " India time" : "regularly"}. Unassigned: {num(p.unassigned)}. Expired: {num(p.expired)} ({pct(p.total ? (100 * p.expired) / p.total : null, 0)}).</p>
+        <p className="text-xs text-muted-foreground">From WATI's own conversation status, saved {w.evaluated_at ? "at " + w.evaluated_at.slice(11, 16) + " India time" : "regularly"}. Unassigned: {num(p.unassigned)}. Expired: {num(p.expired)} (chats whose 24 hours ended in these dates, so they are not part of the {num(p.total)} above).</p>
         <RightNow params={params} />
       </div>
     )

@@ -279,7 +279,7 @@ eq('expiry day: Priya\'s Expired and Missed on that day are 1 and 1', (await a7[
 // ---- 8. "Right now" (the Team Inbox filters) and the chats behind each number
 // Now: c1 pending, c2 pending, c3/c4/c9 solved, c5/c6/c7/c12 expired, c8/c10 open, c11 broadcast (owned). c13 is a broadcast nobody owns (we messaged, they never wrote).
 await sync([conv('c13', 'broadcast', null, { h: 6 })])
-const rnOf = (s) => { const { as_of, ...rest } = s.right_now; return rest }
+const rnOf = (s) => { const { open, pending, expired, unassigned, unassigned_customer } = s.right_now; return { open, pending, expired, unassigned, unassigned_customer } }   // the original five figures (section 10 checks the newer ones)
 const rn = await a7['chats/wati-status']({})
 eq('right now: Open 2 (c8, c10), Pending 2 (c1, c2), Expired 4 (c5, c6, c7, c12), Unassigned 3 (c7, c8, and the broadcast c13), 2 without the broadcast',
   rnOf(rn), { open: 2, pending: 2, expired: 4, unassigned: 3, unassigned_customer: 2 })
@@ -334,6 +334,49 @@ eq('date filter: the Expired list follows the day the chat expired (c12 only)', 
 eq('date filter: the Open list on a day with nothing open is empty, with a total of 0', [(await a9['chats/wati-list']({ state: 'open', from: ist2, to: ist2 })).rows.length, (await a9['chats/wati-list']({ state: 'open', from: ist2, to: ist2 })).total], [0, 0])
 eq('date filter: a covering range gives the whole list', (await a9['chats/wati-list']({ state: 'open', ...WIDE })).rows.map((r) => r.key).sort(), ['c10', 'c8'])
 eq('the other numbers on the page are not affected by the new filters', [(await a9['chats/wati-status']({ sources: 'Website' })).live, (await a9['chats/wati-status']({ sources: 'Website' })).period.total], [(await a9['chats/wati-status']({})).live, (await a9['chats/wati-status']({})).period.total])
+
+// ---- 10. status as it is NOW (24 h by the clock), who still needs a reply, bot-held chats, and the "who followed up" groups
+// c14: stored as Open, but the customer wrote 30 h ago, so its 24 hours are up: it counts as Expired without waiting for WATI's next sync.
+// c15: the chatbot holds it (WATI says "unassigned", the owner is the bot), customer wrote 1 h ago, nobody answered.
+await sync([conv('c14', 'open', 'op1', { h: 30 }), conv('c15', 'open', 'bot1', { h: 1, extra: { assignment: 'unassigned' } })])
+const rn10 = await a7['chats/wati-status']({})
+eq('clock expiry: c14 (stored Open, 30 h old) is not counted as Open or Pending any more', [rn10.live, rn10.right_now.open, rn10.right_now.pending], [{ open: 3, pending: 2 }, 3, 2])
+eq('clock expiry: it is counted as Expired (c5, c6, c7, c12, c14)', rn10.right_now.expired, 5)
+eq('clock expiry: the Expired list shows it with the status "expired"', (await keysOf('expired')).rows.filter((r) => r.key === 'c14').map((r) => r.status), ['expired'])
+eq('clock expiry: a chat expired by the clock cannot be listed as Open', (await keysOf('open')).rows.map((r) => r.key).sort(), ['c10', 'c15', 'c8'])
+eq('needs reply: open or pending and no PERSON has answered the latest message (c1, c8, c10, c15; c2 was answered by a person)', (await keysOf('needs_reply')).rows.map((r) => r.key).sort(), ['c1', 'c10', 'c15', 'c8'])
+eq('needs reply: the tile equals its list', [rn10.right_now.needs_reply, (await keysOf('needs_reply')).total], [4, 4])
+eq('unassigned split: 4 with no owner in all (c7, c8, c13, c15), 3 are customers (c7, c8, c15): 1 held by the bot, 2 with nobody',
+  [rn10.right_now.unassigned, rn10.right_now.unassigned_customer, rn10.right_now.unassigned_bot, rn10.right_now.unassigned_nobody], [4, 3, 1, 2])
+eq('bot-held list: only c15 (the broadcast nobody owns is not a customer waiting)', (await keysOf('bot_held')).rows.map((r) => [r.key, r.owner, r.owner_is_bot]), [['c15', 'Chatbot', true]])
+const w8 = (await keysOf('open')).rows.find((r) => r.key === 'c8').waiting_min
+eq('lists: each row says how many minutes ago the customer last wrote (c8 wrote 1 h ago)', [Number.isInteger(w8), w8 >= 59 && w8 <= 63], [true, true])
+eq('the period tile is not changed by clock expiry: solved still 3', (await a7['chats/wati-status']({})).period.solved, 3)
+
+// who followed up: needs the Salesforce views, so before they exist it says so
+eq('follow-up: without the Salesforce columns it says so instead of failing', await a7['chats/follow-up']({}), { available: false, needsSalesforceView: true })
+await db.exec(`insert into public.wati_messages (wati_id, direction, phone_no, sender_name, conversation_id, received_at) values
+  ('p1', 'inbound', '919800000011', 'P One', 'c1', now()), ('p8', 'inbound', '919800000018', 'P Eight', 'c8', now()),
+  ('p14', 'inbound', '919800000014', 'P Fourteen', 'c14', now()), ('p15', 'inbound', '919800000015', 'P Fifteen', 'c15', now());
+  drop view if exists reporting.v_leads cascade; drop view if exists reporting.v_opps cascade;
+  create table sf_leads (lead_id text, customer_name text, phone10 text, created_at timestamptz, lead_source text, lead_status text, task1 int, task2 int, task3 int, to_nurturing int, to_not_connected int, to_unqualified int);
+  create view reporting.v_leads as select * from sf_leads;
+  insert into sf_leads values ('s1', 'One', '9800000011', now(), 'Website', 'New', 1, 0, 0, 0, 0, 0),            -- still New, but a follow-up task exists -> worked
+    ('s14', 'Fourteen', '9800000014', now(), 'Website', 'Not Connected', 0, 0, 0, 0, 0, 0),                          -- status moved on (they called, no answer) -> worked
+    ('s15', 'Fifteen', '9800000015', now(), 'Website', 'New', 0, 0, 0, 0, 0, 0);                                    -- New and nothing else -> untouched
+  create view reporting.v_opps as select 'o1'::text as opportunity_id, '9800000018'::text as phone10;           -- c8 has an opportunity -> worked`)
+const a10 = api(db)
+const fu = await a10['chats/follow-up']({})
+eq('follow-up: 13 customer chats = 2 replied + 3 followed up elsewhere + 3 untouched + 5 cannot tell (template-only chats left out)', fu, { available: true, total: 13, replied: 2, elsewhere: 3, untouched: 3, unknown: 5 })
+eq('follow-up: the four groups add up to the total', fu.replied + fu.elsewhere + fu.untouched + fu.unknown, fu.total)
+const fuKeys = async (g, extra = {}) => (await a10['chats/wati-list']({ state: g, ...extra })).rows.map((r) => r.key).sort()
+eq('follow-up list: replied = c2, c6 (a person answered)', await fuKeys('fu_replied'), ['c2', 'c6'])
+eq('follow-up list: followed up elsewhere = c1 (task), c14 (status moved), c8 (opportunity)', await fuKeys('fu_elsewhere'), ['c1', 'c14', 'c8'])
+eq('follow-up list: untouched = c15 (still New), c3 and c7 (no lead at all)', await fuKeys('fu_untouched'), ['c15', 'c3', 'c7'])
+eq('follow-up list: cannot tell = the chats with no saved phone number', await fuKeys('fu_unknown'), ['c10', 'c12', 'c4', 'c5', 'c9'])
+eq('follow-up list: each list is as long as its number', [(await a10['chats/wati-list']({ state: 'fu_untouched' })).total, (await a10['chats/wati-list']({ state: 'fu_elsewhere' })).total], [fu.untouched, fu.elsewhere])
+eq('follow-up: the Agent filter applies (Priya Nair owns c1, c4, c5, c6, c9, c10, c12, c14, c2)', (await a10['chats/follow-up']({ owners: 'Priya Nair' })).total, 9)
+eq('follow-up: a day with no chats is all zeros', await a10['chats/follow-up']({ from: '2000-01-01', to: '2000-01-02' }), { available: true, total: 0, replied: 0, elsewhere: 0, untouched: 0, unknown: 0 })
 
 await db.close()
 console.log(`\n${pass} passed, ${fail} failed`)
