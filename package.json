@@ -11,7 +11,8 @@
     "test": "node server/test_api.mjs",
     "test:chats": "node server/test_chats.mjs",
     "test:templates": "node server/test_template_message.mjs",
-    "test:messages": "node server/test_messages.mjs"
+    "test:messages": "node server/test_messages.mjs",
+    "test:chatbots": "node server/test_chatbots.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

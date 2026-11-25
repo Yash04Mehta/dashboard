@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet, useLocation } from "react-router-dom"
-import { Activity, Headset, LogOut, MessageSquare, MessagesSquare, Moon, Sun, UserSearch } from "lucide-react"
+import { Activity, Bot, Headset, LogOut, MessageSquare, MessagesSquare, Moon, Sun, UserSearch } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -18,6 +18,7 @@ const NAV = [
   { to: "/messages", label: "Messages", icon: MessageSquare, keep: ["from", "to", "range", "templates", "sources", "owners"], title: "Messages" },
   { to: "/chats", label: "Chats", icon: MessagesSquare, keep: ["from", "to", "range"], title: "Chats" },
   { to: "/agents", label: "Agents", icon: Headset, keep: ["from", "to", "range"], title: "Agents" },
+  { to: "/chatbots", label: "Chatbots", icon: Bot, keep: ["from", "to", "range"], title: "Chatbots" },
   { to: "/customers", label: "Customer lookup", icon: UserSearch, keep: [], title: "Customer lookup" },
 ]
 

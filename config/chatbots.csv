@@ -1,0 +1,4 @@
+# Names for WATI chatbots, shown on the Chatbots page instead of the long id.
+# One line per chatbot: the id WATI sends (shown in the "Chatbot flows WATI started" table), a comma, then the name you want to see.
+# Lines starting with # are ignored. Example (not a real id):  0123456789abcdef01234567,Delhi chatbot - Yes button
+chatbot_id,name

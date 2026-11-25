@@ -2,7 +2,7 @@ import { LazyMount } from "@/components/lazy"
 import { FilterBar } from "@/components/filter-bar"
 import { SendTimeChart, TemplateTable } from "@/components/analysis"
 import { ErrorNote, PageHeader } from "@/components/kit"
-import { ConversationDetails, LiveBadge, LivePage, MessageFunnelCard, MessageNumbers, ResponseTimeCard } from "@/components/v1"
+import { ConversationDetails, LiveBadge, LivePage, MessageFunnelCard, MessageNumbers } from "@/components/v1"
 import { useApi } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 
@@ -25,12 +25,8 @@ function Page() {
       <ConversationDetails params={params} />
       <MessageNumbers params={params} noTemplate={noTemplate} />
 
-      <LazyMount minHeight={320}>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ResponseTimeCard params={params} />
-          <SendTimeChart params={params} />
-        </div>
-      </LazyMount>
+      {/* "Customer response time" was taken off 25 Nov 2026: it is an estimate from status times, and its read total did not match the tiles. The component is still in v1.tsx. */}
+      <LazyMount minHeight={320}><SendTimeChart params={params} /></LazyMount>
       <LazyMount minHeight={300}><MessageFunnelCard params={params} /></LazyMount>
       {/* the template table compares templates with each other, so it ignores the template filter */}
       <LazyMount minHeight={400}><TemplateTable params={noTemplate} /></LazyMount>

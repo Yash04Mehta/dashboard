@@ -3,6 +3,7 @@
 import { makeCosts } from './costs.mjs'
 import { makeChats } from './chats.mjs'
 import { makeAgents } from './agents.mjs'
+import { makeChatbots } from './chatbots.mjs'
 import { PHONE_SQL, NAME_SQL, NAMES_CTE } from './validate.mjs'
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
@@ -642,6 +643,7 @@ export function makeApi(ctx) {
     ...makeCosts({ Q, MSG, msgWhere, asOf: ctx.asOf }),
     ...makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
     ...makeAgents({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
+    ...makeChatbots({ Q, where, pct, grain }),
     'inbox/kpis': inboxKpis, 'inbox/trend': inboxTrend, 'inbox/operators': inboxOperators, 'inbox/by-time': inboxByTime, 'inbox/duration': inboxDuration, 'inbox/heatmap': inboxHeatmap, 'inbox/waiting': inboxWaiting,
     'health/feed': healthFeed, 'health/gaps': healthGaps, 'health/facts': healthFacts,
   }

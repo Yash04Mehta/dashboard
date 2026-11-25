@@ -12,6 +12,7 @@ const Overview = lazy(() => import("@/pages/overview"))
 const Messages = lazy(() => import("@/pages/messages"))
 const Chats = lazy(() => import("@/pages/chats"))
 const Agents = lazy(() => import("@/pages/agents"))
+const Chatbots = lazy(() => import("@/pages/chatbots"))
 const Customers = lazy(() => import("@/pages/customers"))
 
 createRoot(document.getElementById("root")!).render(
@@ -29,6 +30,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="messages" element={<Messages />} />
               <Route path="chats" element={<Chats />} />
               <Route path="agents" element={<Agents />} />
+              <Route path="chatbots" element={<Chatbots />} />
               <Route path="customers" element={<Customers />} />
               {/* old "v1" addresses still work for bookmarks */}
               <Route path="ov_v1" element={<Navigate to="/" replace />} />
