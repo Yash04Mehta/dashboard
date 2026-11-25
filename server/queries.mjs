@@ -643,7 +643,7 @@ export function makeApi(ctx) {
     ...makeCosts({ Q, MSG, msgWhere, asOf: ctx.asOf }),
     ...makeChats({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
     ...makeAgents({ Q, where, MASK, NAME, TS, pct, grain, prevWindow, reveal }),
-    ...makeChatbots({ Q, where, pct, grain }),
+    ...makeChatbots({ Q, where, pct, grain, MASK, NAME, reveal }),
     'inbox/kpis': inboxKpis, 'inbox/trend': inboxTrend, 'inbox/operators': inboxOperators, 'inbox/by-time': inboxByTime, 'inbox/duration': inboxDuration, 'inbox/heatmap': inboxHeatmap, 'inbox/waiting': inboxWaiting,
     'health/feed': healthFeed, 'health/gaps': healthGaps, 'health/facts': healthFacts,
   }

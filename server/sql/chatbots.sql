@@ -1,6 +1,7 @@
 -- ============================================================================
 -- Chatbots page: four read-only views. Run ONCE as the database admin (Navicat / Supabase SQL Editor). Safe to run again.
--- Changes no table and copies no data. The views carry NO phone numbers and NO message text (only counts, days and the answers the chatbot recorded).
+-- Changes no table and copies no data. The views carry NO message text (only the bot's step, days and the answers the chatbot recorded). Two of them carry the customer's
+-- 10-digit number (as reporting.v_chat_messages already does) so a past conversation can be listed; the dashboard masks it unless the user switches numbers on.
 -- Needs: reporting.phone10() (reporting_views.sql), reporting.v_chat_messages (chats.sql), public.wati_messages, public.delhi_bot_log (the Delhi chatbot workflow
 -- creates it), public.wati_status_events. Undo: drop view reporting.v_delhi_bot_events, reporting.v_delhi_bot_journeys, reporting.v_chatbot_messages, reporting.v_chatbot_triggers;
 -- ============================================================================
@@ -25,6 +26,8 @@ select d.id,
 from public.delhi_bot_log d
 where d.logged_at is not null and reporting.phone10(d.phone) <> '';
 
+-- (phone10 is the LAST column of views 2 and 3 so an already installed copy can be replaced. It is there only so the dashboard can show a past conversation;
+--  the server masks it unless the user switches phone numbers on.)
 -- 2. One row per customer: how far the Delhi chatbot got with them. The answers come from the customer's LATEST event (each event carries everything answered so far).
 --    first_day = the India-time day the customer first appears in the chatbot log (the opening message, or their first answer).
 create or replace view reporting.v_delhi_bot_journeys as
@@ -40,7 +43,8 @@ select a.first_day, a.last_day, a.events, a.opening_sent, a.answered,
        nullif(btrim(substring(l.bot_summary from '(?:^|\n)Solution: *([^\n]*)')), '')       as solution,
        nullif(btrim(substring(l.bot_summary from '(?:^|\n)Products: *([^\n]*)')), '')       as products,
        nullif(btrim(substring(l.bot_summary from '(?:^|\n)Timeline: *([^\n]*)')), '')       as timeline,
-       (nullif(btrim(substring(l.bot_summary from '(?:^|\n)Customer Question: *([^\n]*)')), '') is not null) as asked_question
+       (nullif(btrim(substring(l.bot_summary from '(?:^|\n)Customer Question: *([^\n]*)')), '') is not null) as asked_question,
+       a.p10                                                                                as phone10
 from agg a join last l on l.p10 = a.p10;
 
 -- 3. Every message a WATI bot sent ("Bot" = the flow chatbots, "KnowBot" = the AI assistant), with the STEP it was, recognised from the bot's own wording (company-written scripts).
@@ -51,9 +55,10 @@ select x.wati_id, x.chat_key, x.at_ist, x.at_ist::date as day, x.bot, x.step,
        case when x.bot = 'KnowBot' then 'KnowBot (AI assistant)'
             when x.step in ('Asked: solution', 'Asked: products', 'Asked: timeline', 'Asked: their question', 'Question received', 'Requirement noted', 'Closed: not interested', 'Goodbye') then 'Delhi chatbot'
             when x.step = 'Welcome' then 'Welcome bot'
-            else 'Other bot messages' end as flow
+            else 'Other bot messages' end as flow,
+       x.phone10
 from (
-  select m.wati_id, m.chat_key, m.at_ist,
+  select m.wati_id, m.chat_key, m.at_ist, m.phone10,
          case when lower(m.operator_name) = 'knowbot' then 'KnowBot' else 'Bot' end as bot,
          case when lower(m.operator_name) = 'knowbot'                                      then 'AI answer'
               when t.txt ilike 'What kind of bathroom solution%'                 then 'Asked: solution'

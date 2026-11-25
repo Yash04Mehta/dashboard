@@ -37,13 +37,14 @@ const r = await api(db)['chatbots/overview']({})
 const w = r.wati, d = r.delhi, t = r.triggers
 
 // WATI bots
-eq('bots: chats and messages per chatbot', w.flows.map((f) => [f.flow, f.chats, f.msgs]).sort(), [['Delhi chatbot', 2, 4], ['KnowBot (AI assistant)', 1, 1], ['Welcome bot', 1, 1]])
-eq('bots: all bots together count a chat once', { chats: w.total.chats, msgs: w.total.msgs }, { chats: 3, msgs: 6 })
+eq('bots: customers and messages per chatbot', w.flows.map((f) => [f.flow, f.customers, f.msgs]).sort(), [['Delhi chatbot', 2, 4], ['KnowBot (AI assistant)', 1, 1], ['Welcome bot', 1, 1]])
+eq('bots: all bots together count a customer once', { customers: w.total.customers, msgs: w.total.msgs }, { customers: 3, msgs: 6 })
 eq('bots: a person\'s reply is not a bot message (Delhi chatbot = 4 messages, not 5)', w.flows.find((f) => f.flow === 'Delhi chatbot').msgs, 4)
-eq('bots: Delhi chatbot steps', w.steps.filter((s) => s.flow === 'Delhi chatbot').map((s) => [s.step, s.chats]).sort(), [['Asked: solution', 2], ['Asked: timeline', 1], ['Requirement noted', 1]])
+eq('bots: Delhi chatbot steps', w.steps.filter((s) => s.flow === 'Delhi chatbot').map((s) => [s.step, s.customers]).sort(), [['Asked: solution', 2], ['Asked: timeline', 1], ['Requirement noted', 1]])
 eq('bots: a text that starts with spaces is still recognised (requirement noted)', w.steps.find((s) => s.step === 'Requirement noted')?.msgs, 1)
 eq('bots: welcome text with a line break is recognised', w.steps.find((s) => s.step === 'Welcome')?.msgs, 1)
 eq('bots: per period rows add up', w.trend.reduce((a, x) => a + x.msgs, 0), 6)
+eq('bots: per period customers (one per chatbot per day)', w.trend.reduce((a, x) => a + x.customers, 0), 4)
 eq('bots: 24 hour list', w.hours.length, 24)
 
 // Delhi chatbot
@@ -66,9 +67,37 @@ eq('delhi: per period customers add up', d.trend.reduce((a, x) => a + x.customer
 eq('triggers: each event counted once (two variants of e1), customers once a day', t.rows.map((x) => [x.chatbot_id, x.triggers, x.customers, x.name]).sort(), [['botA', 2, 1, 'Delhi yes button'], ['botB', 1, 1, null]])
 eq('triggers: other events are ignored', t.rows.reduce((a, x) => a + x.triggers, 0), 3)
 
+// the past conversations behind the numbers
+{
+  const L = await api(db)['chatbots/chats']({})
+  eq('list: one row per customer per chatbot, newest first', L.rows.map((x) => [x.flow, x.msgs]).sort(), [['Delhi chatbot', 1], ['Delhi chatbot', 3], ['KnowBot (AI assistant)', 1], ['Welcome bot', 1]])
+  eq('list: total', L.total, 4)
+  const a = L.rows.find((x) => x.flow === 'Delhi chatbot' && x.msgs === 3), b = L.rows.find((x) => x.flow === 'Delhi chatbot' && x.msgs === 1)
+  eq('list: steps in order, each once', a.steps, ['Asked: solution', 'Asked: timeline', 'Requirement noted'])
+  eq('list: what the Delhi customer answered', [a.solution, a.products, a.timeline, a.tier, a.asked_question], ['Complete solution', null, 'Within a month', 'Warm', false])
+  eq('list: second customer asked a question and is Hot + Query', [b.solution, b.products, b.tier, b.asked_question], ['Specific products', 'Showers', 'Hot + Query', true])
+  eq('list: other chatbots have no Delhi answers', L.rows.filter((x) => x.flow !== 'Delhi chatbot').map((x) => [x.delhi, x.tier]), [[false, null], [false, null]])
+  eq('list: numbers are masked, names are not sent', [L.revealed, L.rows.every((x) => x.phone && !x.phone.includes('9800000001') && x.name === null)], [false, true])
+  const R = await api(db)['chatbots/chats']({ reveal: '1' })
+  eq('list: with reveal the number is shown', [R.revealed, R.rows.some((x) => x.phone === '9800000001')], [true, true])
+  const K = await api(db)['chatbots/chats']({ flow: 'KnowBot (AI assistant)' })
+  eq('list: filter by chatbot', K.rows.map((x) => x.flow), ['KnowBot (AI assistant)'])
+  eq('list: question text is not exposed', JSON.stringify(L).includes('small bathroom'), false)
+}
+
+// an installed copy from before phone10 was added: the page says what to run instead of failing
+{
+  const old = await chatbotFixture()
+  await old.exec("drop view reporting.v_chatbot_messages; create view reporting.v_chatbot_messages as select wati_id, chat_key, at_ist, at_ist::date as day, 'Bot'::text as bot, 'x'::text as step, 'Delhi chatbot'::text as flow from reporting.v_chat_messages where false;")
+  const o = await api(old)['chatbots/overview']({}), l = await api(old)['chatbots/chats']({})
+  eq('old view without phone10: the overview still answers (customers counted by chat), only the list needs the new SQL', [o.wati.setup === undefined, !!o.delhi.total, !!o.triggers.rows], [true, true, true])
+  eq('old view without phone10: list says setup', l.setup, true)
+  await old.close()
+}
+
 // a date range with nothing in it
 const none = await api(db)['chatbots/overview']({ from: '2020-01-01', to: '2020-01-02' })
-eq('no data in range: zeros, not errors', [none.delhi.total.customers, none.wati.total.chats, none.triggers.rows.length], [0, 0, 0])
+eq('no data in range: zeros, not errors', [none.delhi.total.customers, none.wati.total.customers, none.triggers.rows.length], [0, 0, 0])
 
 console.log(`\n${pass} passed, ${fail} failed`)
 fs.rmSync(cfg, { recursive: true, force: true })
