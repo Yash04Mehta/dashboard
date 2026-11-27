@@ -58,7 +58,7 @@ export function makeChatbots({ Q, where, pct, grain, MASK, NAME, reveal }) {
   async function overview(q) {
     const g = grain(q)
     // Delhi chatbot filters: tier, solution, products, timeline (each a '|'-separated list; "No tier yet" means no tier)
-    const DL = { 'coalesce(j.final_tier, 'No tier yet')': 'tier', 'j.solution': 'solution', 'j.products': 'products', 'j.timeline': 'timeline' }
+    const DL = { "coalesce(j.final_tier, 'No tier yet')": 'tier', 'j.solution': 'solution', 'j.products': 'products', 'j.timeline': 'timeline' }
     const xm = where(q, { date: 'm.day' }), xj = where(q, { date: 'j.first_day', lists: DL }), xja = where(q, { date: 'j.first_day', extra: ['j.answered'], lists: DL }), xjo = where(q, { date: 'j.first_day' })
     const xe = where(q, { date: 'e.day' }), xt = where(q, { date: 't.day' })
     // the three sources run at the same time; a missing view only blanks its own part
