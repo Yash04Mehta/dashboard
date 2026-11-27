@@ -5,7 +5,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { Area, Bar, BarChart, CartesianGrid, ComposedChart, ReferenceLine, XAxis, YAxis } from "recharts"
 import { format, parseISO } from "date-fns"
-import { ArrowRight, Bot, CheckCheck, ChevronLeft, ChevronRight, CircleHelp, Download, Eye, EyeOff, Hourglass, Inbox as InboxIcon, Info, MessageCircle, PhoneCall, Reply, Search, Send, ShieldAlert, TriangleAlert, UserCheck, Users, UserX, Wrench } from "lucide-react"
+import { ArrowRight, Coins, PiggyBank, Bot, CheckCheck, ChevronLeft, ChevronRight, CircleHelp, Download, Eye, EyeOff, Hourglass, Inbox as InboxIcon, Info, MessageCircle, PhoneCall, Reply, Search, Send, ShieldAlert, TriangleAlert, UserCheck, Users, UserX, Wrench } from "lucide-react"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,7 +18,7 @@ import { BarList, ChartCard, ChartSkeleton, Empty, ErrorNote, ScoreGrid, Sortabl
 import { RefreshContext, api, useApi, type Params } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 import { useReveal } from "@/lib/reveal"
-import { day, duration, num, one, pct, periodLabel, ppDelta } from "@/lib/format"
+import { day, duration, money, num, one, pct, periodLabel, ppDelta } from "@/lib/format"
 import { BUCKETS as FAIL_BUCKETS, BUCKET_ORDER, GROUPS, bucketOf, classify, classifyMsg, type BucketId, type FailGroupId } from "@/lib/fail-reasons"
 import { nameIssue, phoneIssue } from "@/lib/validate"
 import { priceTemplates } from "@/lib/costs"
@@ -78,7 +78,7 @@ const LIST_LABEL: Record<string, string> = Object.fromEntries([...RIGHT_NOW, ...
  * "Show phone numbers" is switched on. The status is WATI's own, up to one sync (a few minutes) old, with one correction: a chat whose 24 hours are up counts as Expired at once
  * instead of waiting for WATI's next report.
  */
-function RightNow({ params }: { params: Params }) {
+function RightNow({ params, part }: { params: Params; part?: "summary" | "now" | "followup" }) {
   const [state, setState] = useState<ListState | null>(null)
   const { reveal } = useReveal()
   const f = { from: params.from, to: params.to, owners: params.owners, sources: params.sources }   // the filters that apply to chats (not Template)
@@ -106,6 +106,7 @@ function RightNow({ params }: { params: Params }) {
   const val = (id: string): number => (id === "bot_held" ? rn.unassigned_bot : rn[id])   // the server calls the bot-held count unassigned_bot
   return (
     <div className="flex flex-col gap-3">
+      {part !== "followup" && <>
       <ScoreGrid cols={3}
         title={<span>Right now · {filtered ? "WATI's status for the filters above" : "the whole Team Inbox as WATI last reported it"}{asOf ? ` (${asOf} India time)` : ""}</span>}
         stats={RIGHT_NOW.map((s) => ({
@@ -124,7 +125,8 @@ function RightNow({ params }: { params: Params }) {
           </Button>
         ))}
       </div>
-      {fuOk ? (
+      </>}
+      {part === "now" ? null : fuOk ? (
         <>
           <ScoreGrid cols={4}
             title={<span>Who followed up · {num(fu.data.total)} customers who wrote in{filtered ? " (chosen filters)" : ""}</span>}
@@ -186,7 +188,7 @@ function RightNow({ params }: { params: Params }) {
  * definitions as WATI's Inbox Analytics, so the numbers match WATI. Only when it has not does this fall back to the older chat log, which cannot see an owner
  * assigned after the customer's last message and so overstates "owner unknown".
  */
-export function ConversationDetails({ params }: { params: Params }) {
+export function ConversationDetails({ params, part }: { params: Params; part?: "summary" | "now" | "followup" }) {
   const dates = { from: params.from, to: params.to }
   const ws = useApi<any>("chats/wati-status", dates)
   const legacy = useApi<any>(ws.data && !ws.data.available ? "inbox/kpis" : null, dates)
@@ -197,16 +199,16 @@ export function ConversationDetails({ params }: { params: Params }) {
     const p = w.period, of = (n: number) => withShare(n, p.total ? Math.round((1000 * n) / p.total) / 10 : null)
     return (
       <div className="flex flex-col gap-2">
-        <ScoreGrid cols={4}
+        {part !== "now" && part !== "followup" && <ScoreGrid cols={4}
           title={<span className="flex flex-wrap items-center justify-between gap-2"><span>Chats with customers</span>{link}</span>}
           stats={[
             { icon: InboxIcon, label: "Chats", loading: false, value: num(p.total), foot: "customers who wrote in", hint: "One chat is one conversation with a customer who wrote to us, as WATI counts it. Messages we sent that nobody answered are not included." },
             { icon: UserCheck, label: "Solved", loading: false, ...of(p.solved), tone: "good", foot: `${num(p.solved_by_bot)} by the bot` },
             { icon: Hourglass, label: "Open or pending (all days)", loading: false, value: num(w.live.open + w.live.pending), foot: `${num(w.live.open)} open, ${num(w.live.pending)} pending`, hint: "Every chat that is open or pending right now, whatever day the customer wrote, so it ignores the date range. The \"Right now\" tiles below follow the date range, so they can be smaller. A chat whose 24 hours are up is not counted." },
             { icon: UserX, label: "Missed", loading: false, ...withShare(p.missed, p.expired ? Math.round((1000 * p.missed) / p.expired) / 10 : null), tone: p.missed > 0 ? "bad" : "default", foot: `of the ${num(p.expired)} that expired in these dates`, hint: "WATI's Missed is a part of Expired: the chat had an owner, its 24 hours ended in these dates, and nobody replied in WATI. Chats owned by the bot are included. The team may still have followed up by phone: see \"Who followed up\" below." },
-          ]} />
-        <p className="text-xs text-muted-foreground">From WATI's own conversation status, saved {w.evaluated_at ? "at " + w.evaluated_at.slice(11, 16) + " India time" : "regularly"}. Unassigned: {num(p.unassigned)}. Expired: {num(p.expired)} (chats whose 24 hours ended in these dates, so they are not part of the {num(p.total)} above).</p>
-        <RightNow params={params} />
+          ]} />}
+        {part !== "now" && part !== "followup" && <p className="text-xs text-muted-foreground">From WATI's own conversation status, saved {w.evaluated_at ? "at " + w.evaluated_at.slice(11, 16) + " India time" : "regularly"}. Unassigned: {num(p.unassigned)}. Expired: {num(p.expired)} (chats whose 24 hours ended in these dates, so they are not part of the {num(p.total)} above).</p>}
+        {part !== "summary" && <RightNow params={params} part={part} />}
       </div>
     )
   }
@@ -230,17 +232,17 @@ export function ConversationDetails({ params }: { params: Params }) {
 }
 
 /** 2 to 7. Total leads (unique), messages sent, delivered, read, replied, failed to send. Each shows the number and the percentage together. */
-export function MessageNumbers({ params, noTemplate }: { params: Params; noTemplate: Params }) {
+export function MessageNumbers({ params, noTemplate, leads = true }: { params: Params; noTemplate: Params; leads?: boolean }) {
   const mk = useApi<any>("messages/kpis", params)
-  const lk = useApi<any>("leads/kpis", noTemplate)
+  const lk = useApi<any>(leads ? "leads/kpis" : null, noTemplate)
   const m = mk.data?.current, mp = mk.data?.previous?.measured >= 100 ? mk.data.previous : undefined
   const l = lk.data?.current
   const d = (a?: number | null, b?: number | null, goodWhen: "up" | "down" = "up") => (mp ? { value: ppDelta(a, b), goodWhen } : undefined)
   return (
     <>
       <ErrorNote message={mk.error || lk.error} />
-      <ScoreGrid cols={3} title="Leads and WhatsApp messages" stats={[
-        { icon: Users, label: "Total leads (unique)", loading: !l, value: num(l?.people), foot: l && `${num(l.leads)} lead records`, hint: "Each phone number counts once, even if the person has several leads. Leads without a usable phone number cannot be counted." },
+      <ScoreGrid cols={leads ? 3 : 5} title={leads ? "Leads and WhatsApp messages" : "WhatsApp messages"} stats={[
+        ...(leads ? [{ icon: Users, label: "Total leads (unique)", loading: !l, value: num(l?.people), foot: l && `${num(l.leads)} lead records`, hint: "Each phone number counts once, even if the person has several leads. Leads without a usable phone number cannot be counted." }] : []),
         { icon: Send, label: "Total messages sent", loading: !m, value: num(m?.measured), foot: m && `${num(m.attempts)} messages in all, including repeats`, hint: "Every template message sent, counted on the day it was sent, as WATI reported it (failed ones included). Searching a number in WATI shows the same messages. Days before WATI's per-message data started count each person once per template." },
         { icon: CheckCheck, label: "Total delivered", loading: !m, ...withShare(m?.delivered_adj, m?.delivered_pct), meter: m?.delivered_pct, delta: d(m?.delivered_pct, mp?.delivered_pct), foot: m && "at least this many", hint: "At least this many: WhatsApp does not always report delivery, so the real number is probably higher." },
         { icon: Eye, label: "Total read", loading: !m, ...withShare(m?.read_adj, m?.read_pct), meter: m?.read_pct, delta: d(m?.read_pct, mp?.read_pct), foot: m && "at least this many" },
@@ -994,5 +996,44 @@ export function MessageLogCard({ params }: { params: Params }) {
         </div>
       )}
     </ChartCard>
+  )
+}
+
+
+/** Overview headline: the four numbers to look at first. */
+export function Headline({ params, noTemplate }: { params: Params; noTemplate: Params }) {
+  const dates = { from: params.from, to: params.to }
+  const lk = useApi<any>("leads/kpis", noTemplate)
+  const mk = useApi<any>("messages/kpis", params)
+  const ws = useApi<any>("chats/wati-status", dates)
+  const l = lk.data?.current, m = mk.data?.current, w = ws.data?.available ? ws.data : null
+  return (
+    <>
+      <ErrorNote message={lk.error || mk.error} />
+      <ScoreGrid cols={4} title="At a glance" stats={[
+        { icon: Users, label: "Leads", loading: !l, value: num(l?.people), foot: l && `${num(l.leads)} lead records`, hint: "Each phone number counts once, even if the person has several leads." },
+        { icon: InboxIcon, label: "Chats", loading: ws.loading && !ws.data, value: w ? num(w.period.total) : "—", foot: w ? `${num(w.period.solved)} solved · ${num(w.period.missed)} missed` : "customers who wrote in", hint: "Customers who wrote to us in these dates, as WATI counts them." },
+        { icon: Reply, label: "Need our reply", loading: ws.loading && !ws.data, value: w ? num(w.right_now?.needs_reply) : "—", tone: w?.right_now?.needs_reply > 0 ? "warn" : undefined, foot: "right now, no person has answered", hint: "Open or pending chats where no person has answered the customer's latest message." },
+        { icon: Send, label: "Messages sent", loading: !m, value: num(m?.measured), foot: m && `${pct(m.replied_pct)} replied · ${pct(m.failed_pct)} failed`, hint: "Template messages sent in these dates. The full breakdown is on the Messages page." },
+      ]} />
+    </>
+  )
+}
+
+/** What the template messages cost in these dates (the same price list as the Chats page). */
+export function MessageCostStrip({ params }: { params: Params }) {
+  const c = useApi<any>("chats/cost", { from: params.from, to: params.to, owners: params.owners, grain: "month" })
+  const t = c.data?.totals, cur = c.data?.currency ?? "INR"
+  if (c.error || c.data?.setup) return null
+  return (
+    <div className="flex flex-col gap-2">
+      <ScoreGrid cols={4} title="What the messages cost" stats={[
+        { icon: Coins, label: "Message cost", loading: !t, value: money(t?.spend, cur), foot: t && `${num(t.units)} messages charged`, hint: "What WhatsApp charges for the template messages sent. Replies our team types are free. An estimate from the price list." },
+        { icon: PiggyBank, label: "Cost per chat", loading: !t, value: money(t?.cost_per_chat, cur), foot: t && `over ${num(t.chats)} chats` },
+        { icon: Send, label: "Cost with no reply", loading: !t, value: money(t?.no_reply_spend, cur), tone: "warn", meter: t?.no_reply_pct, foot: t && `${pct(t.no_reply_pct)} of the cost`, hint: "Money spent on messages to customers who never wrote back." },
+        { icon: TriangleAlert, label: "Cost of missed chats", loading: !t, value: money(t?.missed_spend, cur), tone: "bad", meter: t?.missed_pct, foot: t && `${pct(t.missed_pct)} of the cost`, hint: "Money spent on chats where the customer wrote and nobody replied in time." },
+      ]} />
+      {c.data?.placeholder && <p className="text-xs text-warn">The prices are estimates until the price list is checked against your invoice.</p>}
+    </div>
   )
 }
