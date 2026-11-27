@@ -57,7 +57,9 @@ export function makeChatbots({ Q, where, pct, grain, MASK, NAME, reveal }) {
 
   async function overview(q) {
     const g = grain(q)
-    const xm = where(q, { date: 'm.day' }), xj = where(q, { date: 'j.first_day' }), xja = where(q, { date: 'j.first_day', extra: ['j.answered'] })
+    // Delhi chatbot filters: tier, solution, products, timeline (each a '|'-separated list; "No tier yet" means no tier)
+    const DL = { 'coalesce(j.final_tier, 'No tier yet')': 'tier', 'j.solution': 'solution', 'j.products': 'products', 'j.timeline': 'timeline' }
+    const xm = where(q, { date: 'm.day' }), xj = where(q, { date: 'j.first_day', lists: DL }), xja = where(q, { date: 'j.first_day', extra: ['j.answered'], lists: DL }), xjo = where(q, { date: 'j.first_day' })
     const xe = where(q, { date: 'e.day' }), xt = where(q, { date: 't.day' })
     // the three sources run at the same time; a missing view only blanks its own part
     const [wati, delhi, triggers] = await Promise.all([
@@ -80,7 +82,7 @@ export function makeChatbots({ Q, where, pct, grain, MASK, NAME, reveal }) {
       part(async () => {
         const answersEtc = `select t.k, t.v, count(*)::int as n from reporting.v_delhi_bot_journeys j cross join lateral (values ('solution', j.solution), ('products', j.products), ('timeline', j.timeline)) t(k, v)
           ${xj.sql ? xj.sql + ' and' : 'where'} t.v is not null group by 1, 2 order by 1, 3 desc`
-        const [tot, tiers, dist, combos, trend, fresh] = await Promise.all([
+        const [tot, tiers, dist, combos, trend, fresh, opt] = await Promise.all([
           Q(`select count(*)::int as customers, count(*) filter (where j.opening_sent)::int as opening_sent, count(*) filter (where j.answered)::int as answered,
                count(*) filter (where j.solution is not null)::int as solution, count(*) filter (where j.products is not null)::int as products, count(*) filter (where j.timeline is not null)::int as timeline,
                count(*) filter (where j.asked_question)::int as asked_question, count(*) filter (where j.final_stage = 'no_reply')::int as no_reply
@@ -92,11 +94,16 @@ export function makeChatbots({ Q, where, pct, grain, MASK, NAME, reveal }) {
           Q(`select ${D(`date_trunc('${g}', j.first_day)`)} as period, count(*)::int as customers, count(*) filter (where j.answered)::int as answered
              from reporting.v_delhi_bot_journeys j ${xj.sql} group by 1 order by 1`, xj.args),
           Q(`select count(*)::int as events, ${TS('max(e.at_ist)')} as last_event, ${D('min(e.day)')} as first_day from reporting.v_delhi_bot_events e ${xe.sql}`, xe.args),
+          // every value that exists in these dates, ignoring the filters, so the filter lists do not shrink as you pick
+          Q(`select t.k, t.v from (select 'tier' as k, coalesce(j.final_tier, 'No tier yet') as v from reporting.v_delhi_bot_journeys j ${xjo.sql}
+               union select 'solution', j.solution from reporting.v_delhi_bot_journeys j ${xjo.sql} union select 'products', j.products from reporting.v_delhi_bot_journeys j ${xjo.sql}
+               union select 'timeline', j.timeline from reporting.v_delhi_bot_journeys j ${xjo.sql}) t where t.v is not null order by 1, 2`, xjo.args),
         ])
         const t = tot[0]
         return {
           total: { ...t, answered_pct: pct(t.answered, t.customers), solution_pct: pct(t.solution, t.customers), timeline_pct: pct(t.timeline, t.customers), question_pct: pct(t.asked_question, t.customers) },
           tiers, trend,
+          options: { tier: opt.filter((x) => x.k === 'tier').map((x) => x.v), solution: opt.filter((x) => x.k === 'solution').map((x) => x.v), products: opt.filter((x) => x.k === 'products').map((x) => x.v), timeline: opt.filter((x) => x.k === 'timeline').map((x) => x.v) },
           answers: { solution: dist.filter((x) => x.k === 'solution'), products: dist.filter((x) => x.k === 'products'), timeline: dist.filter((x) => x.k === 'timeline') },
           combos: combos.map((r) => ({ ...r, share: pct(r.customers, t.answered) })),
           events: fresh[0]?.events ?? 0, last_event: fresh[0]?.last_event ?? null, data_from: fresh[0]?.first_day ?? null,

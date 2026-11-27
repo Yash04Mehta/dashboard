@@ -89,12 +89,9 @@ function Page() {
     { key: "waiting", header: "Waiting for us", align: "right", value: (r) => r.waiting, render: (r) => num(r.waiting), hint: STATE.waiting_us.what },
     { key: "waiting_customer", header: "Waiting for customer", align: "right", value: (r) => r.waiting_customer, render: (r) => num(r.waiting_customer), hint: STATE.waiting_customer.what },
     { key: "median", header: "Typical reply", align: "right", value: (r) => r.median, render: (r) => <Timed min={r.median} n={r.measured} />, hint: "The middle reply time: half of this agent's replies were quicker, half slower. One very slow reply does not distort it. The number in brackets is how many replies it rests on." },
-    { key: "p90", header: "Slowest 1 in 10", align: "right", value: (r) => r.p90, render: (r) => (r.measured >= 2 ? duration(r.p90) : "—"), hint: "9 in 10 of this agent's replies were quicker than this." },
-    { key: "w5", header: "Within 5 min", align: "right", value: (r) => r.within_5_pct, render: (r) => (r.measured ? pct(r.within_5_pct, 0) : "—"), hint: "Share of measured replies that came within 5 minutes." },
     { key: "w60", header: "Within 1 hour", align: "right", value: (r) => r.within_60_pct, render: (r) => (r.measured ? pct(r.within_60_pct, 0) : "—"), hint: "Share of measured replies that came within an hour." },
     { key: "open", header: "Open now", align: "right", value: (r) => r.open + r.pending, render: (r) => <span title={`${r.open} open, ${r.pending} pending`}>{num(r.open + r.pending)}</span>, hint: "Chats open or pending in WATI right now, whatever dates are picked." },
     { key: "solved", header: "Solved", align: "right", value: (r) => r.solved, render: (r) => num(r.solved), hint: "Chats this agent marked solved in WATI." },
-    { key: "replies", header: "Replies typed", align: "right", value: (r) => r.replies, render: (r) => num(r.replies), hint: "Messages this person typed that our workflow saved. The workflow saves only a small share of replies, so this undercounts what people really sent." },
   ]
   const listCols: Col<any>[] = [
     { key: "customer", header: "Customer", value: (r) => r.customer, render: (r) => <span className="mx-auto block max-w-[10rem] truncate font-medium" title={r.customer}>{r.customer}</span> },

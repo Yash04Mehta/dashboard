@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Area, Bar, CartesianGrid, Cell, ComposedChart, Line, Pie, PieChart, XAxis, YAxis } from "recharts"
+import { Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, Pie, PieChart, XAxis, YAxis } from "recharts"
 import { format, parseISO } from "date-fns"
 import { Bot, CircleCheck, Clock, Coins, Hourglass, Inbox as InboxIcon, Info, MessagesSquare, PiggyBank, Reply, Send, Timer, TriangleAlert, UserCheck, UserX } from "lucide-react"
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
@@ -8,12 +8,12 @@ import { FilterBar } from "@/components/filter-bar"
 import { axis, rowFormatter } from "@/components/charts"
 import { BarList, ChartCard, ChartSkeleton, Empty, ErrorNote, PageHeader, ScoreGrid, SortableTable, useAutoGrain, type Col, type Grain } from "@/components/kit"
 import { LiveBadge, LivePage } from "@/components/v1"
-import { Heat, Pill } from "@/components/chat-bits"
+import { Pill } from "@/components/chat-bits"
 import { useSeen } from "@/components/lazy"
 import { useApi } from "@/lib/api"
 import { useFilters } from "@/lib/filters"
 import { useReveal } from "@/lib/reveal"
-import { day, duration, money, num, one, pct, periodLabel, ppDelta, relDelta } from "@/lib/format"
+import { day, duration, hourLabel, money, num, one, pct, periodLabel, ppDelta, relDelta } from "@/lib/format"
 
 /** Chats: the WATI Inbox Analytics overview (activity tiles, status over time, status donut, volume heat map, chat length, operator performance),
  *  with what every chat cost in template messages next to it, and the chat list underneath. Built from public.wati_messages (the new webhook). */
@@ -73,6 +73,7 @@ function Page() {
   const { params, filters, meta } = useFilters()
   const { reveal, canReveal } = useReveal()
   const [slot, setSlot] = useState<"chats" | "unassigned">("chats")
+  const [by, setBy] = useState<"hour" | "weekday">("hour")
   const [shown, setShown] = useState<Record<SeriesKey, boolean>>({ chats: true, replied: true, waiting: true, missed: true, outbound: false })
   const [listStatus, setListStatus] = useState<"all" | "unassigned" | StatusKey>("all")   // "unassigned" is not a status: the customer wrote and nobody owns the chat
 
@@ -228,7 +229,9 @@ function Page() {
                   <XAxis dataKey="label" {...axis} minTickGap={24} />
                   <YAxis {...axis} width={40} allowDecimals={false} />
                   <ChartTooltip content={<ChartTooltipContent formatter={rowFormatter(lineCfg)} />} />
-                  {SERIES.filter((s) => shown[s.key]).map((s) => <Area key={s.key} dataKey={s.key} type="monotone" stroke={s.color} fill={s.color} fillOpacity={s.key === "chats" ? 0.12 : 0.04} strokeWidth={2} dot={{ r: 3, fill: s.color }} activeDot={{ r: 5 }} isAnimationActive={false} />)}
+                  {SERIES.filter((s) => shown[s.key]).map((s) => trendRows.length <= 3
+                    ? <Bar key={s.key} dataKey={s.key} fill={s.color} radius={[3, 3, 0, 0]} maxBarSize={36} isAnimationActive={false} />
+                    : <Area key={s.key} dataKey={s.key} type="monotone" stroke={s.color} fill={s.color} fillOpacity={s.key === "chats" ? 0.12 : 0.04} strokeWidth={2} dot={{ r: 3, fill: s.color }} activeDot={{ r: 5 }} isAnimationActive={false} />)}
                 </ComposedChart>
               </ChartContainer>
               <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Lines to show">
@@ -271,9 +274,24 @@ function Page() {
 
       <div ref={lowRef} className="flex flex-col gap-6">
       <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Busiest times" description="When new chats start, by weekday and hour (India time). Darker means more chats."
+        <ChartCard title="Busiest times" description="When new chats start (India time). Switch between the hour of the day and the day of the week."
           actions={<Tabs value={slot} onValueChange={(v) => setSlot(v as "chats" | "unassigned")}><TabsList><TabsTrigger value="chats">All chats</TabsTrigger><TabsTrigger value="unassigned">Owner unknown</TabsTrigger></TabsList></Tabs>}>
-          {heat.error ? <ErrorNote message={heat.error} /> : !heat.data ? <ChartSkeleton h={260} /> : <Heat cells={heat.data.cells} kind={slot} />}
+          {heat.error ? <ErrorNote message={heat.error} /> : !heat.data ? <ChartSkeleton h={260} /> : (
+            <div className="flex flex-col gap-3">
+              <Tabs value={by} onValueChange={(v) => setBy(v as "hour" | "weekday")}><TabsList><TabsTrigger value="hour">By hour</TabsTrigger><TabsTrigger value="weekday">By weekday</TabsTrigger></TabsList></Tabs>
+              <ChartContainer config={{ n: { label: "New chats", color: slot === "chats" ? "var(--c1)" : "var(--warn)" } }} className="h-[230px] w-full">
+                <BarChart data={by === "hour"
+                  ? Array.from({ length: 24 }, (_, h) => ({ label: hourLabel(h), n: (heat.data.cells as any[]).filter((c) => c.hour === h).reduce((a, c) => a + (c[slot] ?? 0), 0) }))
+                  : [1, 2, 3, 4, 5, 6, 0].map((d) => ({ label: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d], n: (heat.data.cells as any[]).filter((c) => c.dow === d).reduce((a, c) => a + (c[slot] ?? 0), 0) }))} margin={{ left: 4, right: 4, top: 8 }}>
+                  <CartesianGrid vertical={false} />
+                  <XAxis dataKey="label" {...axis} interval={by === "hour" ? 2 : 0} />
+                  <YAxis {...axis} width={36} allowDecimals={false} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Bar dataKey="n" fill="var(--color-n)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                </BarChart>
+              </ChartContainer>
+            </div>
+          )}
         </ChartCard>
         <ChartCard title="How long chats last" description="Chats with more than one message: how many there were (bars) and how long they lasted on average, from first to last message (line).">
           {dur.error ? <ErrorNote message={dur.error} /> : !dur.data ? <ChartSkeleton h={260} /> : dur.data.rows.length === 0 ? <Empty>No chats with more than one message in this range.</Empty> : (

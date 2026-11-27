@@ -5,7 +5,7 @@ import { format, parseISO } from "date-fns"
 import { Bot, CircleCheck, Sparkles, Users } from "lucide-react"
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { FilterBar } from "@/components/filter-bar"
+import { FilterBar, MultiSelect } from "@/components/filter-bar"
 import { axis } from "@/components/charts"
 import { BarList, ChartCard, ChartSkeleton, Empty, ErrorNote, PageHeader, ScoreGrid, SortableTable, useAutoGrain, type Col, type Grain } from "@/components/kit"
 import { LiveBadge, LivePage } from "@/components/v1"
@@ -52,12 +52,15 @@ function Page() {
   const [sp] = useSearchParams()
   const [grain, setGrain] = useAutoGrain(filters.from, filters.to)
   const [pick, setPick] = useState<string>("all")
+  const [df, setDf] = useState<Record<"tier" | "solution" | "products" | "timeline", string[]>>({ tier: [], solution: [], products: [], timeline: [] })   // Delhi chatbot filters
+  const dfParams = Object.fromEntries(Object.entries(df).filter(([, v]) => v.length).map(([k, v]) => [k, v.join("|")]))
+  const dfOn = Object.keys(dfParams).length > 0
   const [lowRef, low] = useSeen()   // the conversation list at the bottom is asked for only when you scroll near it
 
   // Every other page opens on yesterday, which would hide the past. This one opens on All time unless the address already says which dates.
   useEffect(() => { if (!sp.get("from") && !sp.get("to") && !sp.get("range")) set({ from: undefined, to: undefined }) }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const ov = useApi<any>("chatbots/overview", { from: params.from, to: params.to, grain })
+  const ov = useApi<any>("chatbots/overview", { from: params.from, to: params.to, grain, ...dfParams })
   const list = useApi<any>(low ? "chatbots/chats" : null, { from: params.from, to: params.to, flow: pick === "all" ? undefined : pick, reveal: reveal ? 1 : undefined, limit: 200 })
   const d = ov.data
   const w = d?.wati, dl = d?.delhi, tr = d?.triggers
@@ -190,7 +193,19 @@ function Page() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Delhi chatbot: how far customers get" description="Of the customers contacted. “No reply” means they never answered and the 24-hour check gave up on them.">
+        {dl && !dl.setup && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3" role="group" aria-label="Delhi chatbot filters">
+          <span className="text-sm font-medium">Delhi chatbot filter</span>
+          <MultiSelect label="Lead tier" options={dl.options.tier} value={df.tier} onChange={(v) => setDf((o) => ({ ...o, tier: v }))} />
+          <MultiSelect label="Kind of solution" options={dl.options.solution} value={df.solution} onChange={(v) => setDf((o) => ({ ...o, solution: v }))} />
+          <MultiSelect label="Products" options={dl.options.products} value={df.products} onChange={(v) => setDf((o) => ({ ...o, products: v }))} />
+          <MultiSelect label="Timeline" options={dl.options.timeline} value={df.timeline} onChange={(v) => setDf((o) => ({ ...o, timeline: v }))} />
+          {dfOn && <button type="button" className="text-sm text-muted-foreground underline" onClick={() => setDf({ tier: [], solution: [], products: [], timeline: [] })}>Clear</button>}
+          <span className="w-full text-xs text-muted-foreground">{dfOn ? `Showing ${num(dt?.customers ?? 0)} Delhi chatbot customers who match. ` : ""}Applies to the Delhi cards below and the Delhi tiles at the top, not to the other chatbots.</span>
+        </div>
+      )}
+
+      <ChartCard title="Delhi chatbot: how far customers get" description="Of the customers contacted. “No reply” means they never answered and the 24-hour check gave up on them.">
           {!d ? <ChartSkeleton h={220} /> : dl.setup ? <SetupNote what="This card" /> : !dt.customers ? <Empty>No Delhi chatbot customers in these dates.</Empty> : (
             <BarList max={dt.customers} rows={[
               { label: "Got the opening message", value: dt.opening_sent }, { label: "Answered a question", value: dt.answered }, { label: "Chose a kind of solution", value: dt.solution },
